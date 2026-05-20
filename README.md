@@ -119,6 +119,99 @@
 
 ## 기본 사용 흐름
 
+### 0. cmux 자동 분배 준비
+
+원하는 운영 방식이 “cmux에 6개 역할 탭을 띄우고, Commander에게만 말하는 방식”이면 먼저 setup을 실행한다.
+
+```bash
+cd ~/ai-squad
+node bin/squad.mjs setup --project /path/to/current-project --dry-run
+node bin/squad.mjs setup --project /path/to/current-project
+```
+
+이 명령은 cmux 현재 창에 다음 역할 탭을 만들고 각 탭에서 Codex를 역할별로 시작한다.
+각 Codex 세션은 현재 프로젝트와 `~/ai-squad`를 함께 쓸 수 있게 시작되므로, worker가 `.squad-runs/.../results/*.md` 결과 파일을 남길 수 있다.
+
+- `플레너 노동자`
+- `백엔드 노동자`
+- `DB 노동자`
+- `리뷰어 노동자`
+- `테스터 노동자`
+- `코만더노동자`
+
+이후에는 `코만더노동자` 탭에만 작업을 말한다. Commander는 필요한 worker에게 자동 분배 명령을 실행하고, worker 결과를 취합해 사용자에게 보고한다.
+구현/수정/추가/개발 작업은 Backend Worker가 실제 구현 담당이고, Reviewer/Tester는 구현 후 검토 담당이다.
+
+예:
+
+```text
+회원가입 API 구현해줘. Prisma DB 변경 필요 여부도 같이 검토해줘.
+```
+
+아래 명령들은 setup 없이 프롬프트를 직접 생성/전송하고 싶을 때 사용한다.
+
+`current-task.md`를 기준으로 필요한 역할을 자동 선택하고, 각 cmux 터미널에 붙여넣을 프롬프트를 생성한다.
+
+```bash
+cd ~/ai-squad
+node bin/squad.mjs dispatch --project /path/to/current-project
+```
+
+생성 결과는 `.squad-runs/<timestamp>/` 아래에 저장된다.
+
+주요 파일:
+
+- `cmux-paste-guide.md`: cmux 터미널별 붙여넣기 가이드
+- `01-*.prompt.md`: 각 역할 에이전트에게 보낼 프롬프트
+- `commander.collect.prompt.md`: 역할별 답변을 취합할 Commander 프롬프트
+- `manifest.json`: 이번 분배의 모드와 역할 목록
+
+작업 유형을 직접 지정할 수도 있다.
+
+```bash
+node bin/squad.mjs dispatch --mode feature --project /path/to/current-project
+node bin/squad.mjs dispatch --mode bugfix --project /path/to/current-project
+node bin/squad.mjs dispatch --mode release --project /path/to/current-project
+```
+
+역할을 직접 고정하려면 다음처럼 실행한다.
+
+```bash
+node bin/squad.mjs dispatch --roles backend,database,commander,reviewer,tester --project /path/to/current-project
+```
+
+cmux 탭 제목에 역할명이 들어가 있으면 자동으로 프롬프트를 보낼 수 있다.
+
+예:
+
+- `플래너 노동자`
+- `백엔드 노동자`
+- `데이터베이스 노동자`
+- `커맨더`
+- `코만더노동자`
+- `리뷰어`
+- `테스터`
+
+```bash
+node bin/squad.mjs send --run latest --dry-run
+node bin/squad.mjs send --run latest
+```
+
+붙여넣은 뒤 바로 실행까지 하려면 `--submit`을 붙인다.
+
+```bash
+node bin/squad.mjs send --run latest --submit
+```
+
+분배 생성과 전송을 한 번에 하려면:
+
+```bash
+node bin/squad.mjs dispatch --project /path/to/current-project --send
+node bin/squad.mjs dispatch --project /path/to/current-project --send --submit
+```
+
+주의: `--submit`은 해당 cmux 탭이 이미 Codex/Claude 같은 AI 입력 대기 상태일 때만 사용한다. 일반 shell 상태에서 실행하면 긴 프롬프트가 shell에 입력될 수 있다.
+
 ### 1. 현재 프로젝트 정보 작성
 
 작업 전에 `ai/` 폴더에 현재 프로젝트 정보를 작성한다.
