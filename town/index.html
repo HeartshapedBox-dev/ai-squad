@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI Squad Town</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">AI Squad Town</p>
+          <h1>James의 코딩 노동판</h1>
+        </div>
+        <div class="toolbar" aria-label="작업 제어">
+          <button class="icon-button primary" id="refreshRun" type="button" aria-label="최신 run 새로고침">
+            <span aria-hidden="true">↻</span>
+          </button>
+          <button class="icon-button" id="runDemo" type="button" aria-label="데모 재생">
+            <span aria-hidden="true">▶</span>
+          </button>
+        </div>
+      </header>
+
+      <section class="workspace" aria-label="AI Squad 작업 현황">
+        <section class="town" aria-label="작업 타운">
+          <div class="room room-planner">
+            <span class="room-title">Planner</span>
+            <span class="room-detail">회의실</span>
+          </div>
+          <div class="room room-backend">
+            <span class="room-title">Backend</span>
+            <span class="room-detail">서버실</span>
+          </div>
+          <div class="room room-database">
+            <span class="room-title">Database</span>
+            <span class="room-detail">DB 룸</span>
+          </div>
+          <div class="room room-reviewer">
+            <span class="room-title">Reviewer</span>
+            <span class="room-detail">리뷰 데스크</span>
+          </div>
+          <div class="room room-tester">
+            <span class="room-title">Tester</span>
+            <span class="room-detail">실험실</span>
+          </div>
+          <div class="square">
+            <span>Commander</span>
+            <small>광장</small>
+          </div>
+
+          <div class="path horizontal top"></div>
+          <div class="path horizontal bottom"></div>
+          <div class="path vertical left"></div>
+          <div class="path vertical right"></div>
+
+          <div class="agent commander" data-agent="commander">
+            <span class="bubble">대기 중</span>
+            <span class="avatar"><span class="face"></span></span>
+            <strong>Commander</strong>
+          </div>
+          <div class="agent planner" data-agent="planner">
+            <span class="bubble">대기 중</span>
+            <span class="avatar"><span class="face"></span></span>
+            <strong>Planner</strong>
+          </div>
+          <div class="agent backend" data-agent="backend">
+            <span class="bubble">대기 중</span>
+            <span class="avatar"><span class="face"></span></span>
+            <strong>Backend</strong>
+          </div>
+          <div class="agent database" data-agent="database">
+            <span class="bubble">대기 중</span>
+            <span class="avatar"><span class="face"></span></span>
+            <strong>Database</strong>
+          </div>
+          <div class="agent reviewer" data-agent="reviewer">
+            <span class="bubble">대기 중</span>
+            <span class="avatar"><span class="face"></span></span>
+            <strong>Reviewer</strong>
+          </div>
+          <div class="agent tester" data-agent="tester">
+            <span class="bubble">대기 중</span>
+            <span class="avatar"><span class="face"></span></span>
+            <strong>Tester</strong>
+          </div>
+        </section>
+
+        <aside class="panel" aria-label="작업 타임라인">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Current Run</p>
+              <h2 id="runTitle">최신 run 불러오는 중</h2>
+            </div>
+            <span class="status-pill" id="runStatus">Idle</span>
+          </div>
+          <ol class="timeline" id="timeline"></ol>
+        </aside>
+      </section>
+
+      <section class="commander-report" aria-label="Commander 최종 보고">
+        <div>
+          <p class="eyebrow">Commander Report</p>
+          <h2 id="reportTitle">작업 대기 중</h2>
+        </div>
+        <p id="reportText">작업을 시작하면 각 worker의 위치, 상태, 결과가 이 화면에 반영됩니다.</p>
+      </section>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

@@ -9,6 +9,8 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 const RUNS_DIR = path.join(ROOT, '.squad-runs');
+const STATE_DIR = path.join(ROOT, '.squad-state');
+const TERMINAL_MAP_FILE = path.join(STATE_DIR, 'terminals.json');
 
 const ROLE_ORDER = [
   'planner',
@@ -488,12 +490,12 @@ async function dispatch(args) {
 async function setup(args) {
   const project = args.project;
   const roleTabs = [
-    ['planner', '플레너 노동자'],
-    ['backend', '백엔드 노동자'],
-    ['database', 'DB 노동자'],
-    ['reviewer', '리뷰어 노동자'],
-    ['tester', '테스터 노동자'],
-    ['commander', '코만더노동자'],
+    ['planner', 'planner 플레너 노동자'],
+    ['backend', 'backend 백엔드 노동자'],
+    ['database', 'database DB 노동자'],
+    ['reviewer', 'reviewer 리뷰어 노동자'],
+    ['tester', 'tester 테스터 노동자'],
+    ['commander', 'commander 코만더노동자'],
   ];
   const runDir = path.join(RUNS_DIR, `setup-${makeRunId()}`);
 
@@ -529,13 +531,34 @@ async function setup(args) {
     throw new Error(result.stderr.trim() || 'Failed to setup cmux squad.');
   }
 
+  const setupMap = parseSetupMap(result.stdout);
+  renameRoleWorkspaces(roleTabs, setupMap.workspaces);
+  await mkdir(STATE_DIR, { recursive: true });
+  await writeFile(
+    TERMINAL_MAP_FILE,
+    `${JSON.stringify(
+      {
+        project,
+        createdAt: new Date().toISOString(),
+        terminals: setupMap.terminals,
+      },
+      null,
+      2,
+    )}\n`,
+    'utf8',
+  );
+
   console.log(result.stdout.trim());
   console.log(`Setup files: ${runDir}`);
+  console.log(`Terminal map: ${TERMINAL_MAP_FILE}`);
   console.log('이제 cmux의 코만더노동자 탭에 작업을 말하면 된다.');
 }
 
 function makeSetupAppleScript(roleTabs, runDir) {
   return `
+set terminalMap to {}
+set workspaceMap to {}
+
 tell application "cmux"
   activate
   set targetWindow to front window
@@ -546,14 +569,57 @@ ${roleTabs.map(([role], index) => {
   set currentTab to ${tabExpression}
   select tab currentTab
   set currentTerminal to focused terminal of currentTab
+  set end of terminalMap to ${appleString(role)} & "=" & (id of currentTerminal)
+  set end of workspaceMap to "workspace:" & ${appleString(role)} & "=" & (id of currentTab)
   set commandText to read POSIX file ${appleString(commandFile)} as «class utf8»
   input text commandText to currentTerminal
 `;
 }).join('\n')}
 end tell
 
-return "Created/seeded AI Squad tabs: ${roleTabs.map(([, title]) => title).join(', ')}"
+set AppleScript's text item delimiters to linefeed
+set setupMapText to (terminalMap & workspaceMap) as text
+set AppleScript's text item delimiters to ""
+
+return "Created/seeded AI Squad tabs: ${roleTabs.map(([, title]) => title).join(', ')}" & linefeed & setupMapText
 `;
+}
+
+function parseSetupMap(output) {
+  const terminals = {};
+  const workspaces = {};
+  for (const line of output.split(/\r?\n/)) {
+    const workspaceMatch = line.match(/^workspace:([a-z]+)=(.+)$/);
+    if (workspaceMatch) {
+      workspaces[workspaceMatch[1]] = workspaceMatch[2].trim();
+      continue;
+    }
+
+    const terminalMatch = line.match(/^([a-z]+)=(.+)$/);
+    if (terminalMatch) {
+      terminals[terminalMatch[1]] = terminalMatch[2].trim();
+    }
+  }
+  return { terminals, workspaces };
+}
+
+function renameRoleWorkspaces(roleTabs, workspaces) {
+  for (const [role, title] of roleTabs) {
+    const workspace = workspaces[role];
+    if (!workspace) {
+      continue;
+    }
+
+    const result = spawnSync('cmux', ['rename-workspace', '--workspace', workspace, title], {
+      encoding: 'utf8',
+      maxBuffer: 1024 * 1024,
+    });
+
+    if (result.error || result.status !== 0) {
+      const message = result.error?.message ?? result.stderr.trim() ?? 'unknown error';
+      console.warn(`Workspace rename skipped for ${role}: ${message}`);
+    }
+  }
 }
 
 function makeStartCommand(project, title, ai, promptFile) {
@@ -657,6 +723,7 @@ async function resolveRunDir(run) {
 async function send(args) {
   const runDir = await resolveRunDir(args.run);
   const manifest = JSON.parse(await readFile(path.join(runDir, 'manifest.json'), 'utf8'));
+  const terminalMap = await loadTerminalMap(manifest.project);
   const rolePayloads = [];
 
   for (const [index, role] of manifest.roles.entries()) {
@@ -666,6 +733,7 @@ async function send(args) {
       role,
       aliases: ROLE_ALIASES[role] ?? [role],
       file: path.join(runDir, filename),
+      terminalId: terminalMap[role] ?? '',
       submit: args.submit,
       dryRun: args.dryRun,
     });
@@ -688,6 +756,18 @@ async function send(args) {
   console.log(result.stdout.trim());
 }
 
+async function loadTerminalMap(project) {
+  try {
+    const state = JSON.parse(await readFile(TERMINAL_MAP_FILE, 'utf8'));
+    if (state.project && path.resolve(state.project) !== path.resolve(project)) {
+      return {};
+    }
+    return state.terminals ?? {};
+  } catch {
+    return {};
+  }
+}
+
 function makeSendAppleScript(rolePayloads) {
   return `
 set sentCount to 0
@@ -708,13 +788,28 @@ return "Matched: " & matchedText & " / Sent prompts: " & sentCount & " / Missing
 `;
 }
 
-function makeRoleAppleScript({ role, aliases, file, submit, dryRun }) {
+function makeRoleAppleScript({ role, aliases, file, terminalId, submit, dryRun }) {
   return `
   set targetTerminal to missing value
   set targetTabName to ""
   repeat with w in windows
     repeat with t in tabs of w
       set tabName to name of t
+      repeat with term in terminals of t
+        set termName to name of term
+        if targetTerminal is missing value and ${appleString(terminalId)} is not "" and (id of term) is ${appleString(terminalId)} then
+          set targetTerminal to term
+          set targetTabName to tabName
+        end if
+${aliases
+  .map(
+    (alias) => `        if targetTerminal is missing value and termName contains ${appleString(alias)} then
+          set targetTerminal to term
+          set targetTabName to tabName
+        end if`,
+  )
+  .join('\n')}
+      end repeat
 ${aliases
   .map(
     (alias) => `      if targetTerminal is missing value and tabName contains ${appleString(alias)} then
