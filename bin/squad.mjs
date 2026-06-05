@@ -628,7 +628,7 @@ function makeStartCommand(project, title, ai, promptFile) {
   const titleText = title.replaceAll('\\', '\\\\').replaceAll("'", "'\\''");
   return `cd ${projectPath}
 printf '\\033]0;${titleText}\\007'
-${shellQuote(ai)} --cd ${projectPath} --add-dir ${squadPath} "$(cat ${shellQuote(promptFile)})"
+${shellQuote(ai)} --sandbox workspace-write --cd ${projectPath} --add-dir ${squadPath} "$(cat ${shellQuote(promptFile)})"
 `;
 }
 

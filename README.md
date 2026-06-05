@@ -131,6 +131,8 @@ node bin/squad.mjs setup --project /path/to/current-project
 
 이 명령은 cmux 현재 창에 다음 역할 탭을 만들고 각 탭에서 Codex를 역할별로 시작한다.
 각 Codex 세션은 현재 프로젝트와 `~/ai-squad`를 함께 쓸 수 있게 시작되므로, worker가 `.squad-runs/.../results/*.md` 결과 파일을 남길 수 있다.
+생성되는 worker 시작 명령은 `codex --sandbox workspace-write --cd <project> --add-dir ~/ai-squad ...` 형식이다.
+`--add-dir`는 `read-only` sandbox에서는 거부되므로 `workspace-write`가 필요하다.
 
 - `플레너 노동자`
 - `백엔드 노동자`
