@@ -1,39 +1,18 @@
 # Tech Stack
 
-## Backend
-
-- Framework: NestJS
-- Language: TypeScript
-- Package Manager: pnpm
-- ORM: TypeORM
-- Database: PostgreSQL
-- Cache: Redis
-- Validation: class-validator / class-transformer
-- API Docs: Swagger
-
 ## Frontend
 
 - Framework: Next.js
 - Language: TypeScript
-- State Management:
-- Styling:
-- Form:
-- API Client:
+- Styling: 프로젝트 초기화 후 결정
+- State Management: 프로젝트 초기화 후 결정
+- API Client: 프로젝트 초기화 후 결정
+
+## Backend
+
+- API: Next.js Route Handlers 또는 별도 백엔드
+- Database: 프로젝트 초기화 후 결정
 
 ## Infra
 
-- Cloud: AWS
-- Deploy: GitHub Actions
-- Server: EC2
-- Database: RDS
-- Storage: S3
-- Web Server: Nginx
-- Domain: Route53
-
-## External Services
-
-- Firebase FCM
-- Aligo SMS
-- Infobank 알림톡
-- PG
-- 외부 보험 견적 API
+- Deploy: Vercel 또는 프로젝트 기준에 맞춰 결정

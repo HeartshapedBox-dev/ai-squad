@@ -119,9 +119,72 @@
 
 ## 기본 사용 흐름
 
+### 빠른 사용 흐름
+
+새 프로젝트를 만들고 AI Squad가 바로 프로젝트 구성을 시작하게 하려면:
+
+```bash
+cd ~/ai-squad
+squad new my-app --type next
+```
+
+`my-app`처럼 이름만 주면 기본 위치는 `~/projects/my-app`이다.
+경로를 직접 주면 그 경로를 그대로 쓴다.
+이 명령은 프로젝트 폴더를 만들고, `ai/` 문맥을 초기화하고, cmux에 에이전트 탭을 띄운 뒤 Commander가 첫 작업을 자동 분배하게 한다.
+
+```bash
+squad new ~/projects/api-server --type nest
+squad new mobile-app --type expo
+squad new scratch
+```
+
+첫 작업 내용을 직접 지정하려면:
+
+```bash
+squad new mobile-app --type expo --task "Expo 앱 초기 구조 만들고 로그인 화면부터 시작"
+```
+
+에이전트만 띄우고 자동 시작은 하지 않으려면:
+
+```bash
+squad new my-app --type next --no-kickoff
+```
+
+지원하는 타입:
+
+- `blank`
+- `next`
+- `nest`
+- `expo`
+
+기존 프로젝트에 AI Squad만 붙이려면:
+
+```bash
+squad start /path/to/current-project
+```
+
+최근 setup된 프로젝트에 바로 작업을 보내려면:
+
+```bash
+squad ask "로그인 API 500 오류 수정"
+```
+
+최근 분배 상태를 보려면:
+
+```bash
+squad status
+```
+
+실행 전 생성될 파일과 setup 명령만 확인하려면:
+
+```bash
+squad new my-app --type next --dry-run
+squad start /path/to/current-project --dry-run
+```
+
 ### 0. cmux 자동 분배 준비
 
-원하는 운영 방식이 “cmux에 6개 역할 탭을 띄우고, Commander에게만 말하는 방식”이면 먼저 setup을 실행한다.
+원하는 운영 방식이 “cmux에 역할별 탭을 띄우고, Commander에게만 말하는 방식”이면 먼저 setup을 실행한다.
 
 ```bash
 cd ~/ai-squad
@@ -137,6 +200,8 @@ node bin/squad.mjs setup --project /path/to/current-project
 - `플레너 노동자`
 - `백엔드 노동자`
 - `DB 노동자`
+- `프론트엔드 노동자`
+- `인프라 노동자`
 - `리뷰어 노동자`
 - `테스터 노동자`
 - `코만더노동자`
@@ -179,7 +244,7 @@ node bin/squad.mjs dispatch --mode release --project /path/to/current-project
 역할을 직접 고정하려면 다음처럼 실행한다.
 
 ```bash
-node bin/squad.mjs dispatch --roles backend,database,commander,reviewer,tester --project /path/to/current-project
+node bin/squad.mjs dispatch --roles planner,backend,database,frontend,infra,commander,reviewer,tester --project /path/to/current-project
 ```
 
 cmux 탭 제목에 역할명이 들어가 있으면 자동으로 프롬프트를 보낼 수 있다.
