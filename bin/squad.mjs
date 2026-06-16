@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { readdir } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import os from 'node:os';
@@ -77,6 +77,7 @@ function parseArgs(argv) {
     noSetup: false,
     noContext: false,
     noKickoff: false,
+    approval: 'never',
     positionals: [],
   };
 
@@ -126,6 +127,9 @@ function parseArgs(argv) {
       args.noContext = true;
     } else if (arg === '--no-kickoff') {
       args.noKickoff = true;
+    } else if (arg === '--approval' && next) {
+      args.approval = next;
+      i += 1;
     } else if (!arg.startsWith('-')) {
       args.positionals.push(arg);
     }
@@ -584,6 +588,14 @@ function kickoffTaskForNewProject(projectPath, type) {
   return `${projectName} 새 프로젝트를 시작해줘. 코드 프로젝트 경로는 ${projectPath}이고 타입은 ${type}(${stack.summary})다. 먼저 프로젝트 폴더 상태를 확인하고, 비어 있으면 적절한 초기 구조와 패키지/설정/README/검증 명령을 제안한 뒤 실제 생성까지 진행해줘. 필요한 역할에게 분석을 분배하고, 구현 담당은 기존 파일이 있으면 보존하면서 최소 변경으로 프로젝트 구성을 시작해줘.`;
 }
 
+function normalizeApproval(value) {
+  const approval = String(value ?? 'never').toLowerCase();
+  if (approval === 'request' || approval === 'never') {
+    return approval;
+  }
+  throw new Error('Unknown approval mode. Use one of: request, never');
+}
+
 async function writeProjectContext(projectPath, type) {
   const projectName = projectNameFromPath(projectPath);
   const stack = techStackForType(type);
@@ -666,6 +678,7 @@ async function writeProjectContext(projectPath, type) {
 
 async function newProject(args) {
   const type = normalizeProjectType(args.type);
+  const approval = normalizeApproval(args.approval);
   const project = projectTargetFromArgs(args);
 
   if (!project) {
@@ -676,11 +689,12 @@ async function newProject(args) {
     const kickoffTask = args.noKickoff ? null : args.task ?? kickoffTaskForNewProject(project, type);
     console.log(`Would create project: ${project}`);
     console.log(`Type: ${type}`);
+    console.log(`Approval: ${approval}`);
     console.log(args.noContext ? 'Context update: skipped' : 'Context update: ai/*.md');
     console.log(args.noSetup ? 'Setup: skipped' : 'Setup: dry-run');
     console.log(kickoffTask ? `Kickoff: ${kickoffTask}` : 'Kickoff: skipped');
     if (!args.noSetup) {
-      await setup({ ...args, project, dryRun: true, kickoffTask });
+      await setup({ ...args, project, dryRun: true, kickoffTask, approval });
     }
     return;
   }
@@ -693,20 +707,32 @@ async function newProject(args) {
 
   console.log(`Project ready: ${project}`);
   console.log(`Type: ${type}`);
+  console.log(`Approval: ${approval}`);
   if (!args.noContext) {
     console.log('Updated: ai/project-context.md, ai/tech-stack.md, ai/current-task.md');
   }
 
   if (!args.noSetup) {
     const kickoffTask = args.noKickoff ? null : args.task ?? kickoffTaskForNewProject(project, type);
-    await setup({ ...args, project, kickoffTask });
+    await setup({ ...args, project, kickoffTask, approval });
   }
 }
 
 async function startProject(args) {
   const target = args.positionals[0] ?? args.project;
   const project = path.resolve(expandHome(target));
-  await setup({ ...args, project });
+  await ensureProjectDirectory(project);
+  await setup({ ...args, project, approval: normalizeApproval(args.approval) });
+}
+
+async function ensureProjectDirectory(project) {
+  const info = await stat(project).catch(() => null);
+  if (!info) {
+    throw new Error(`Project directory not found: ${project}`);
+  }
+  if (!info.isDirectory()) {
+    throw new Error(`Project path is not a directory: ${project}`);
+  }
 }
 
 async function currentProjectFromState() {
@@ -854,7 +880,7 @@ async function setup(args) {
     const commandFile = path.join(runDir, `${role}.command.sh`);
 
     await writeFile(promptFile, prompt, 'utf8');
-    await writeFile(commandFile, makeStartCommand(project, title, args.ai, promptFile), 'utf8');
+    await writeFile(commandFile, makeStartCommand(project, title, args.ai, promptFile, args.approval), 'utf8');
   }
 
   if (args.dryRun) {
@@ -971,13 +997,18 @@ function renameRoleWorkspaces(roleTabs, workspaces) {
   }
 }
 
-function makeStartCommand(project, title, ai, promptFile) {
+function makeStartCommand(project, title, ai, promptFile, approval = 'never') {
   const projectPath = shellQuote(project);
   const squadPath = shellQuote(ROOT);
+  const projectsPath = shellQuote(path.join(os.homedir(), 'projects'));
   const titleText = title.replaceAll('\\', '\\\\').replaceAll("'", "'\\''");
+  const approvalMode = normalizeApproval(approval);
+  const codexFlags = approvalMode === 'request'
+    ? `--sandbox workspace-write --ask-for-approval on-request`
+    : `--dangerously-bypass-approvals-and-sandbox`;
   return `cd ${projectPath}
 printf '\\033]0;${titleText}\\007'
-${shellQuote(ai)} --sandbox workspace-write --cd ${projectPath} --add-dir ${squadPath} "$(cat ${shellQuote(promptFile)})"
+${shellQuote(ai)} ${codexFlags} --cd ${projectPath} --add-dir ${squadPath} --add-dir ${projectsPath} "$(cat ${shellQuote(promptFile)})"
 `;
 }
 
@@ -1222,8 +1253,8 @@ function help() {
   console.log(`AI Squad helper
 
 Usage:
-  squad new <name-or-path> [--type blank|next|nest|expo] [--task "첫 작업"] [--dry-run]
-  squad start [/path/to/project] [--dry-run]
+  squad new <name-or-path> [--type blank|next|nest|expo] [--approval request|never] [--task "첫 작업"] [--dry-run]
+  squad start [/path/to/project] [--approval request|never] [--dry-run]
   squad ask "작업 내용" [--project /path/to/project]
   squad status [--run latest|/path/to/run]
 
@@ -1233,10 +1264,10 @@ Lower-level commands:
   node bin/squad.mjs send [--run latest|/path/to/run] [--dry-run] [--submit]
 
 Examples:
-  squad new my-app --type next
-  squad new ~/projects/api-server --type nest
-  squad new mobile-app --type expo --task "Expo 앱 초기 구조 만들고 로그인 화면부터 시작"
-  squad start /Users/james/daldale-api-backend
+  squad new my-app --type next --approval request
+  squad new my-app --type next --approval never
+  squad new mobile-app --type expo --task "Expo 앱 초기 구조 만들고 로그인 화면부터 시작" --approval never
+  squad start /Users/james/daldale-api-backend --approval request
   squad ask "로그인 API 500 오류 수정"
   squad status
 `);

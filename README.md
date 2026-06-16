@@ -124,8 +124,7 @@
 새 프로젝트를 만들고 AI Squad가 바로 프로젝트 구성을 시작하게 하려면:
 
 ```bash
-cd ~/ai-squad
-squad new my-app --type next
+squad new my-app --type next --approval never
 ```
 
 `my-app`처럼 이름만 주면 기본 위치는 `~/projects/my-app`이다.
@@ -141,13 +140,13 @@ squad new scratch
 첫 작업 내용을 직접 지정하려면:
 
 ```bash
-squad new mobile-app --type expo --task "Expo 앱 초기 구조 만들고 로그인 화면부터 시작"
+squad new mobile-app --type expo --task "Expo 앱 초기 구조 만들고 로그인 화면부터 시작" --approval never
 ```
 
-에이전트만 띄우고 자동 시작은 하지 않으려면:
+예전처럼 승인 받고 실행하려면:
 
 ```bash
-squad new my-app --type next --no-kickoff
+squad new my-app --type next --approval request
 ```
 
 지원하는 타입:
@@ -160,7 +159,7 @@ squad new my-app --type next --no-kickoff
 기존 프로젝트에 AI Squad만 붙이려면:
 
 ```bash
-squad start /path/to/current-project
+squad start /path/to/current-project --approval request
 ```
 
 최근 setup된 프로젝트에 바로 작업을 보내려면:
@@ -178,8 +177,8 @@ squad status
 실행 전 생성될 파일과 setup 명령만 확인하려면:
 
 ```bash
-squad new my-app --type next --dry-run
-squad start /path/to/current-project --dry-run
+squad new my-app --type next --approval never --dry-run
+squad start /path/to/current-project --approval request --dry-run
 ```
 
 ### 0. cmux 자동 분배 준비
@@ -193,9 +192,13 @@ node bin/squad.mjs setup --project /path/to/current-project
 ```
 
 이 명령은 cmux 현재 창에 다음 역할 탭을 만들고 각 탭에서 Codex를 역할별로 시작한다.
-각 Codex 세션은 현재 프로젝트와 `~/ai-squad`를 함께 쓸 수 있게 시작되므로, worker가 `.squad-runs/.../results/*.md` 결과 파일을 남길 수 있다.
-생성되는 worker 시작 명령은 `codex --sandbox workspace-write --cd <project> --add-dir ~/ai-squad ...` 형식이다.
-`--add-dir`는 `read-only` sandbox에서는 거부되므로 `workspace-write`가 필요하다.
+각 Codex 세션은 현재 프로젝트, `~/ai-squad`, `~/projects`를 함께 참고하면서 시작한다.
+`--approval never`를 쓰면 생성되는 worker 시작 명령은 `codex --dangerously-bypass-approvals-and-sandbox --cd <project> --add-dir ~/ai-squad --add-dir ~/projects ...` 형식이다.
+`--approval request`를 쓰면 `codex --sandbox workspace-write --ask-for-approval on-request --cd <project> --add-dir ~/ai-squad --add-dir ~/projects ...` 형식으로 시작한다.
+
+`--dangerously-bypass-approvals-and-sandbox`는 Codex의 승인 질문과 sandbox를 우회한다.
+즉, `squad new ...`로 뜬 에이전트들은 명령 실행, 파일 수정, 패키지 설치 등을 사용자에게 매번 묻지 않고 진행할 수 있다.
+대신 안전장치가 거의 없어지므로 개인 로컬 프로젝트에서만 사용하고, 신뢰하지 않는 레포나 외부에서 받은 작업 지시에는 쓰지 않는다.
 
 - `플레너 노동자`
 - `백엔드 노동자`
