@@ -60,6 +60,17 @@ const WORKFLOW_FILES = {
   release: 'workflows/release-flow.md',
 };
 
+const DEFAULT_ROLE_MODELS = {
+  planner: 'gpt-5',
+  backend: 'gpt-5-mini',
+  database: 'gpt-5',
+  frontend: 'gpt-5-mini',
+  infra: 'gpt-5-mini',
+  commander: 'gpt-5.5',
+  reviewer: 'gpt-5',
+  tester: 'gpt-5-mini',
+};
+
 function parseArgs(argv) {
   const args = {
     command: argv[2] ?? 'help',
@@ -71,6 +82,8 @@ function parseArgs(argv) {
     submit: false,
     dryRun: false,
     ai: 'codex',
+    model: null,
+    roleModels: null,
     type: 'blank',
     name: null,
     dir: null,
@@ -102,6 +115,12 @@ function parseArgs(argv) {
       i += 1;
     } else if (arg === '--ai' && next) {
       args.ai = next;
+      i += 1;
+    } else if (arg === '--model' && next) {
+      args.model = next;
+      i += 1;
+    } else if (arg === '--role-models' && next) {
+      args.roleModels = parseRoleModels(next);
       i += 1;
     } else if (arg === '--type' && next) {
       args.type = next;
@@ -140,6 +159,24 @@ function parseArgs(argv) {
   }
 
   return args;
+}
+
+function parseRoleModels(value) {
+  const models = {};
+
+  for (const entry of value.split(',')) {
+    const [rawRole, rawModel] = entry.split('=');
+    const role = rawRole?.trim().toLowerCase();
+    const model = rawModel?.trim();
+
+    if (!role || !model) {
+      continue;
+    }
+
+    models[role] = model;
+  }
+
+  return models;
 }
 
 async function readText(relativePath) {
@@ -878,13 +915,15 @@ async function setup(args) {
       : workerBootPrompt(role, project);
     const promptFile = path.join(runDir, `${role}.boot.md`);
     const commandFile = path.join(runDir, `${role}.command.sh`);
+    const model = modelForRole(role, args);
 
     await writeFile(promptFile, prompt, 'utf8');
-    await writeFile(commandFile, makeStartCommand(project, title, args.ai, promptFile, args.approval), 'utf8');
+    await writeFile(commandFile, makeStartCommand(project, title, args.ai, promptFile, args.approval, model), 'utf8');
   }
 
   if (args.dryRun) {
     console.log(`Setup dry-run files: ${runDir}`);
+    console.log(`Models: ${roleTabs.map(([role]) => `${role}=${modelForRole(role, args)}`).join(', ')}`);
     console.log('실제 cmux 탭은 만들지 않았다.');
     return;
   }
@@ -997,7 +1036,11 @@ function renameRoleWorkspaces(roleTabs, workspaces) {
   }
 }
 
-function makeStartCommand(project, title, ai, promptFile, approval = 'never') {
+function modelForRole(role, args) {
+  return args.roleModels?.[role] ?? args.model ?? DEFAULT_ROLE_MODELS[role] ?? null;
+}
+
+function makeStartCommand(project, title, ai, promptFile, approval = 'never', model = null) {
   const projectPath = shellQuote(project);
   const squadPath = shellQuote(ROOT);
   const projectsPath = shellQuote(path.join(os.homedir(), 'projects'));
@@ -1006,9 +1049,10 @@ function makeStartCommand(project, title, ai, promptFile, approval = 'never') {
   const codexFlags = approvalMode === 'request'
     ? `--sandbox workspace-write --ask-for-approval on-request`
     : `--dangerously-bypass-approvals-and-sandbox`;
+  const modelFlag = model ? ` --model ${shellQuote(model)}` : '';
   return `cd ${projectPath}
 printf '\\033]0;${titleText}\\007'
-${shellQuote(ai)} ${codexFlags} --cd ${projectPath} --add-dir ${squadPath} --add-dir ${projectsPath} "$(cat ${shellQuote(promptFile)})"
+${shellQuote(ai)} ${codexFlags}${modelFlag} --cd ${projectPath} --add-dir ${squadPath} --add-dir ${projectsPath} "$(cat ${shellQuote(promptFile)})"
 `;
 }
 
@@ -1253,19 +1297,20 @@ function help() {
   console.log(`AI Squad helper
 
 Usage:
-  squad new <name-or-path> [--type blank|next|nest|expo] [--approval request|never] [--task "첫 작업"] [--dry-run]
-  squad start [/path/to/project] [--approval request|never] [--dry-run]
+  squad new <name-or-path> [--type blank|next|nest|expo] [--approval request|never] [--model MODEL] [--role-models role=model,...] [--task "첫 작업"] [--dry-run]
+  squad start [/path/to/project] [--approval request|never] [--model MODEL] [--role-models role=model,...] [--dry-run]
   squad ask "작업 내용" [--project /path/to/project]
   squad status [--run latest|/path/to/run]
 
 Lower-level commands:
-  node bin/squad.mjs setup [--project /path/to/project] [--ai codex] [--dry-run]
+  node bin/squad.mjs setup [--project /path/to/project] [--ai codex] [--model MODEL] [--role-models role=model,...] [--dry-run]
   node bin/squad.mjs dispatch [--mode auto|feature|bugfix|release] [--project /path/to/project] [--roles planner,backend,database,frontend,infra,commander,reviewer,tester] [--task "extra instruction"] [--send] [--submit]
   node bin/squad.mjs send [--run latest|/path/to/run] [--dry-run] [--submit]
 
 Examples:
   squad new my-app --type next --approval request
   squad new my-app --type next --approval never
+  squad new my-app --type next --model gpt-5-mini --role-models commander=gpt-5.5,reviewer=gpt-5
   squad new mobile-app --type expo --task "Expo 앱 초기 구조 만들고 로그인 화면부터 시작" --approval never
   squad start /Users/james/daldale-api-backend --approval request
   squad ask "로그인 API 500 오류 수정"

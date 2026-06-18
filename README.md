@@ -196,6 +196,31 @@ node bin/squad.mjs setup --project /path/to/current-project
 `--approval never`를 쓰면 생성되는 worker 시작 명령은 `codex --dangerously-bypass-approvals-and-sandbox --cd <project> --add-dir ~/ai-squad --add-dir ~/projects ...` 형식이다.
 `--approval request`를 쓰면 `codex --sandbox workspace-write --ask-for-approval on-request --cd <project> --add-dir ~/ai-squad --add-dir ~/projects ...` 형식으로 시작한다.
 
+기본 모델 정책은 Commander/Reviewer/설계 역할은 높게, 구현 worker는 가볍게 잡는다.
+
+| 역할 | 기본 모델 |
+|---|---|
+| Commander | `gpt-5.5` |
+| Reviewer | `gpt-5` |
+| Planner | `gpt-5` |
+| Database | `gpt-5` |
+| Backend | `gpt-5-mini` |
+| Frontend | `gpt-5-mini` |
+| Infra | `gpt-5-mini` |
+| Tester | `gpt-5-mini` |
+
+모든 에이전트 모델을 한 번에 바꾸려면:
+
+```bash
+squad new my-app --type next --model gpt-5-mini
+```
+
+역할별로 덮어쓰려면:
+
+```bash
+squad new my-app --type next --model gpt-5-mini --role-models commander=gpt-5.5,reviewer=gpt-5
+```
+
 `--dangerously-bypass-approvals-and-sandbox`는 Codex의 승인 질문과 sandbox를 우회한다.
 즉, `squad new ...`로 뜬 에이전트들은 명령 실행, 파일 수정, 패키지 설치 등을 사용자에게 매번 묻지 않고 진행할 수 있다.
 대신 안전장치가 거의 없어지므로 개인 로컬 프로젝트에서만 사용하고, 신뢰하지 않는 레포나 외부에서 받은 작업 지시에는 쓰지 않는다.

@@ -2,11 +2,11 @@
 
 ## 프로젝트 개요
 
-`my-app`는 Next.js web application다.
+`dev-town`는 Next.js web application다.
 
 ## 코드 프로젝트 경로
 
-- /Users/james/projects/my-app
+- /Users/james/projects/dev-town
 
 ## 주요 기능
 
