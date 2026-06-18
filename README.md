@@ -162,7 +162,7 @@ squad new my-app --type next --approval request
 squad start /path/to/current-project --approval request
 ```
 
-최근 setup된 프로젝트에 바로 작업을 보내려면:
+최근 setup된 프로젝트에 바로 작업을 보내고 worker 결과까지 기다리려면:
 
 ```bash
 squad ask "로그인 API 500 오류 수정"
@@ -201,24 +201,24 @@ node bin/squad.mjs setup --project /path/to/current-project
 | 역할 | 기본 모델 |
 |---|---|
 | Commander | `gpt-5.5` |
-| Reviewer | `gpt-5` |
-| Planner | `gpt-5` |
-| Database | `gpt-5` |
-| Backend | `gpt-5-mini` |
-| Frontend | `gpt-5-mini` |
-| Infra | `gpt-5-mini` |
-| Tester | `gpt-5-mini` |
+| Reviewer | `gpt-5.4-mini` |
+| Planner | `gpt-5.4-mini` |
+| Database | `gpt-5.4-mini` |
+| Backend | `gpt-5.4-mini` |
+| Frontend | `gpt-5.4-mini` |
+| Infra | `gpt-5.4-mini` |
+| Tester | `gpt-5.4-mini` |
 
 모든 에이전트 모델을 한 번에 바꾸려면:
 
 ```bash
-squad new my-app --type next --model gpt-5-mini
+squad new my-app --type next --model gpt-5.4-mini
 ```
 
 역할별로 덮어쓰려면:
 
 ```bash
-squad new my-app --type next --model gpt-5-mini --role-models commander=gpt-5.5,reviewer=gpt-5
+squad new my-app --type next --model gpt-5.4-mini --role-models commander=gpt-5.5
 ```
 
 `--dangerously-bypass-approvals-and-sandbox`는 Codex의 승인 질문과 sandbox를 우회한다.
@@ -234,8 +234,9 @@ squad new my-app --type next --model gpt-5-mini --role-models commander=gpt-5.5,
 - `테스터 노동자`
 - `코만더노동자`
 
-이후에는 `코만더노동자` 탭에만 작업을 말한다. Commander는 필요한 worker에게 자동 분배 명령을 실행하고, worker 결과를 취합해 사용자에게 보고한다.
-구현/수정/추가/개발 작업은 Backend Worker가 실제 구현 담당이고, Reviewer/Tester는 구현 후 검토 담당이다.
+이후에는 `코만더노동자` 탭에만 작업을 말한다. Commander는 필요한 worker에게 자동 분배 명령을 실행하고, worker 결과 파일이 생길 때까지 기다린 뒤 결과를 취합해 사용자에게 보고한다.
+구현/수정/추가/개발 작업은 Backend/Frontend Worker가 실제 구현 담당이다. 화면/UI 작업은 Frontend가 구현하고, 서버/API 작업은 Backend가 구현한다.
+Reviewer, Planner, Tester 세션은 떠 있어도 매 작업마다 호출하지 않는다. “리뷰/검토”를 요청하면 Reviewer를, “기획/계획/설계”를 요청하면 Planner를, “테스트/검증/QA”를 요청하면 Tester를 분배에 포함한다.
 
 예:
 
@@ -298,12 +299,18 @@ node bin/squad.mjs send --run latest
 node bin/squad.mjs send --run latest --submit
 ```
 
+기본 전송에서는 Commander 탭에 다시 보내지 않고 worker 탭에만 보낸다.
+Commander 프롬프트까지 직접 보내야 하는 수동 실험에서는 `--include-commander`를 붙인다.
+
 분배 생성과 전송을 한 번에 하려면:
 
 ```bash
 node bin/squad.mjs dispatch --project /path/to/current-project --send
 node bin/squad.mjs dispatch --project /path/to/current-project --send --submit
+node bin/squad.mjs dispatch --project /path/to/current-project --send --submit --wait
 ```
+
+`--wait`은 worker가 `results/*.md` 파일을 쓸 때까지 기다린다. Commander 자동 흐름에서는 이 옵션을 기본으로 사용한다.
 
 주의: `--submit`은 해당 cmux 탭이 이미 Codex/Claude 같은 AI 입력 대기 상태일 때만 사용한다. 일반 shell 상태에서 실행하면 긴 프롬프트가 shell에 입력될 수 있다.
 

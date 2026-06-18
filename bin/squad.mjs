@@ -3,6 +3,7 @@
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { readdir } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
+정import { setTimeout as sleep } from 'node:timers/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +13,7 @@ const ROOT = path.resolve(__dirname, '..');
 const RUNS_DIR = path.join(ROOT, '.squad-runs');
 const STATE_DIR = path.join(ROOT, '.squad-state');
 const TERMINAL_MAP_FILE = path.join(STATE_DIR, 'terminals.json');
+const CMUX_CLI = '/Applications/cmux.app/Contents/Resources/bin/cmux';
 
 const ROLE_ORDER = [
   'planner',
@@ -61,14 +63,14 @@ const WORKFLOW_FILES = {
 };
 
 const DEFAULT_ROLE_MODELS = {
-  planner: 'gpt-5',
-  backend: 'gpt-5-mini',
-  database: 'gpt-5',
-  frontend: 'gpt-5-mini',
-  infra: 'gpt-5-mini',
+  planner: 'gpt-5.4-mini',
+  backend: 'gpt-5.4-mini',
+  database: 'gpt-5.4-mini',
+  frontend: 'gpt-5.4-mini',
+  infra: 'gpt-5.4-mini',
   commander: 'gpt-5.5',
-  reviewer: 'gpt-5',
-  tester: 'gpt-5-mini',
+  reviewer: 'gpt-5.4-mini',
+  tester: 'gpt-5.4-mini',
 };
 
 function parseArgs(argv) {
@@ -80,6 +82,9 @@ function parseArgs(argv) {
     task: null,
     run: 'latest',
     submit: false,
+    wait: false,
+    waitTimeout: 900,
+    includeCommander: false,
     dryRun: false,
     ai: 'codex',
     model: null,
@@ -136,6 +141,13 @@ function parseArgs(argv) {
       i += 1;
     } else if (arg === '--submit') {
       args.submit = true;
+    } else if (arg === '--wait') {
+      args.wait = true;
+    } else if (arg === '--wait-timeout' && next) {
+      args.waitTimeout = Number(next);
+      i += 1;
+    } else if (arg === '--include-commander') {
+      args.includeCommander = true;
     } else if (arg === '--dry-run') {
       args.dryRun = true;
     } else if (arg === '--send') {
@@ -247,6 +259,10 @@ function inferRoles(taskText, mode, requestedRoles) {
   }
 
   const text = taskText.toLowerCase();
+  if (mentionsAllAgents(text)) {
+    return ROLE_ORDER;
+  }
+
   const roles = new Set();
 
   if (mode === 'release') {
@@ -274,8 +290,12 @@ function inferRoles(taskText, mode, requestedRoles) {
       roles.add('backend');
     }
     roles.add('commander');
-    roles.add('reviewer');
-    roles.add('tester');
+    if (mentionsReview(text)) {
+      roles.add('reviewer');
+    }
+    if (mentionsTesting(text)) {
+      roles.add('tester');
+    }
     return sortRoles(roles);
   }
 
@@ -295,10 +315,37 @@ function inferRoles(taskText, mode, requestedRoles) {
   }
 
   roles.add('commander');
-  roles.add('reviewer');
-  roles.add('tester');
+  if (mentionsReview(text)) {
+    roles.add('reviewer');
+  }
+  if (mentionsTesting(text)) {
+    roles.add('tester');
+  }
 
   return sortRoles(roles);
+}
+
+function mentionsAllAgents(text) {
+  return hasAny(text, [
+    'all agents',
+    'all workers',
+    'every agent',
+    'all roles',
+    'fanout',
+    'fan out',
+    '7 agents',
+    '7 workers',
+    '전체 에이전트',
+    '모든 에이전트',
+    '전체 worker',
+    '전체 워커',
+    '모든 워커',
+    '모든 역할',
+    '7개 에이전트',
+    '7개 워커',
+    '전부 전달',
+    '전체 전달',
+  ]);
 }
 
 function mentionsDatabase(text) {
@@ -369,18 +416,56 @@ function mentionsInfra(text) {
 
 function isPlanningNeeded(text) {
   return hasAny(text, [
-    'new',
-    'feature',
-    'flow',
-    'mvp',
     'requirements',
     'policy',
-    '신규',
-    '기능',
+    'plan',
+    'planning',
+    'architecture',
+    'design',
+    'roadmap',
     '요구사항',
     '정책',
-    '플로우',
+    '계획',
+    '설계',
     '기획',
+    '아키텍처',
+    '로드맵',
+    '플랜',
+    '정리해',
+  ]);
+}
+
+function mentionsReview(text) {
+  return hasAny(text, [
+    'review',
+    'reviewer',
+    'audit',
+    '검토',
+    '리뷰',
+    '리뷰어',
+    '감사',
+  ]);
+}
+
+function mentionsTesting(text) {
+  return hasAny(text, [
+    'test',
+    'tests',
+    'testing',
+    'tester',
+    'qa',
+    'verify',
+    'verification',
+    'validation',
+    'curl',
+    'postman',
+    '테스트',
+    '테스터',
+    '검증',
+    '확인',
+    'qa',
+    '시나리오',
+    '회귀',
   ]);
 }
 
@@ -412,39 +497,49 @@ function makeRunId() {
   return `${safeIso}-${suffix}`;
 }
 
-async function buildContextBlock(projectPath, inlineTask) {
-  const contextFiles = CONTEXT_FILES.map((file) => `- ${path.join(ROOT, file)}`).join('\n');
-  const taskBlock = inlineTask
-    ? `\n\n추가 작업 지시:\n${inlineTask}\n`
-    : '';
-
-  return `현재 코드 프로젝트:\n- ${projectPath}\n\nAI Squad 공통 규칙:\n- ${path.join(ROOT, 'global-rules.md')}\n\n현재 프로젝트 문맥:\n${contextFiles}${taskBlock}`;
-}
-
-function rolePrompt(role, mode, projectPath, contextBlock, resultFile = null, taskText = '') {
+function rolePrompt(role, mode, projectPath, _contextBlock, resultFile = null, taskText = '', runId = '') {
   const implement = shouldImplement(taskText);
-  const fileInstruction = resultFile
-    ? `\n\n분석이 끝나면 같은 내용을 반드시 이 파일에도 저장해줘.\n- ${resultFile}\n`
-    : '';
-  const resultInstruction = `\n\n답변 마지막에는 아래 형식으로 짧게 정리해줘.\n- 결론\n- 영향 범위\n- 위험 요소\n- 다음 역할에게 넘길 내용\n${fileInstruction}`;
+  const resultInstruction = resultFile
+    ? `결과 저장: ${resultFile}\n결과 파일 첫 줄: 작업 ID: ${runId}`
+    : '결과 파일 저장 없음';
+
+  const base = [
+    `작업 ID: ${runId}`,
+    `작업 모드: ${mode}`,
+    `프로젝트: ${projectPath}`,
+    `작업: ${taskText}`,
+    resultInstruction,
+    '',
+    '작업 전 반드시 부팅 때 안내받은 global-rules.md와 agents/<role>.md를 확인하고, 위반 가능성이 있으면 중단해라.',
+    '필요하면 부팅 때 안내받은 규칙/역할/프로젝트 문맥 파일을 읽어라.',
+    '답변과 결과 파일 마지막에는 결론, 영향 범위, 위험 요소, 다음 역할에게 넘길 내용을 짧게 정리해라.',
+  ].join('\n');
 
   if (role === 'commander') {
-    return `~/ai-squad/global-rules.md와 ~/ai-squad/agents/commander.md를 기준으로 답변해줘.\n\n${contextBlock}\n\n작업 모드: ${mode}\n\n다른 역할 에이전트들의 결과를 취합해서 Codex에게 넘길 최종 구현 프롬프트를 만들어줘.\n아직 코드 수정은 하지 마.\n\n반드시 포함:\n- 목표\n- 작업 범위\n- 수정 파일 후보\n- 역할별 결론 요약\n- 구현 순서\n- 위험 요소\n- Codex 실행 프롬프트\n- 검증 체크리스트\n${resultInstruction}`;
+    return `${base}\n\nCommander 역할: worker 결과를 취합해서 최종 구현 프롬프트와 검증 체크리스트를 만들어라. 직접 코드 수정은 하지 마라.`;
   }
 
   if (role === 'reviewer') {
-    return `~/ai-squad/global-rules.md와 ~/ai-squad/agents/reviewer.md 기준으로 이번 작업 또는 diff를 리뷰해줘.\n\n${contextBlock}\n\n코드 프로젝트 경로:\n- ${projectPath}\n\n중점:\n- 요구사항 충족 여부\n- 버그 가능성\n- 예외처리\n- 인증/권한\n- DB 정합성\n- 성능\n- 테스트 누락\n\n아직 구현 전이면 예상 리뷰 포인트를 정리하고, 구현 후라면 실제 diff 기준으로 리뷰해줘.\n${resultInstruction}`;
+    return `${base}\n\nReviewer 역할: 요구사항, 버그 가능성, 예외처리, 인증/권한, DB 정합성, 성능, 테스트 누락 관점으로 리뷰해라.`;
   }
 
   if (role === 'tester') {
-    return `~/ai-squad/global-rules.md와 ~/ai-squad/agents/tester.md 기준으로 이번 작업의 테스트 시나리오를 작성해줘.\n\n${contextBlock}\n\n코드 프로젝트 경로:\n- ${projectPath}\n\n포함:\n- 정상 케이스\n- 예외 케이스\n- 권한 케이스\n- DB 검증\n- 회귀 테스트\n- cURL 또는 Postman 예시\n- 최종 체크리스트\n${resultInstruction}`;
+    return `${base}\n\nTester 역할: 정상/예외/권한/DB/회귀 테스트 시나리오와 실행 체크리스트를 작성해라.`;
   }
 
   if (role === 'backend' && implement) {
-    return `~/ai-squad/global-rules.md와 ~/ai-squad/agents/backend.md를 기준으로 답변하고 실제 구현까지 진행해줘.\n\n${contextBlock}\n\n코드 프로젝트 경로:\n- ${projectPath}\n\n너는 이번 작업의 실제 구현 담당이다.\n반드시 해야 할 일:\n- 기존 코드 구조와 스타일을 먼저 확인한다.\n- 필요한 Controller / Service / Repository / DTO / Module / Prisma schema 변경을 실제 파일로 구현한다.\n- DB 변경이 필요하면 schema.prisma 수정과 migration 필요 여부를 결과에 명시한다.\n- 관련 없는 리팩토링은 하지 않는다.\n- 환경변수명, 인증/권한 로직, 기존 API 응답 구조는 임의 변경하지 않는다.\n- 구현 후 가능하면 타입체크/테스트/빌드 중 가능한 검증을 실행한다.\n- 변경한 파일 목록과 검증 결과를 정리한다.\n${resultInstruction}`;
+    return `${base}\n\nBackend 역할: 실제 구현 담당이다. 기존 구조를 확인하고 최소 변경으로 구현해라. DB 변경, 검증 명령, 변경 파일을 결과에 명시해라.`;
   }
 
-  return `~/ai-squad/global-rules.md와 ~/ai-squad/agents/${role}.md를 기준으로 답변해줘.\n\n${contextBlock}\n\n코드 프로젝트 경로:\n- ${projectPath}\n\n이번 작업에서 ${ROLE_LABELS[role]} 관점의 영향 범위, 수정 파일 후보, 설계 판단, 구현 순서, 위험 요소를 정리해줘.\n아직 코드는 수정하지 마.\n${resultInstruction}`;
+  if (role === 'frontend' && implement) {
+    return `${base}\n\nFrontend 역할: 실제 구현 담당이다. 기존 UI 구조와 스타일을 확인하고 최소 변경으로 구현해라. 컴포넌트, 페이지, 스타일, 상태 처리 변경과 검증 명령을 결과에 명시해라.`;
+  }
+
+  if (['backend', 'frontend'].includes(role)) {
+    return `${base}\n\n${ROLE_LABELS[role]} 역할: 네 관점의 영향 범위, 수정 파일 후보, 설계 판단, 구현 순서, 위험 요소를 정리해라. 구현 지시가 명확하면 실제 코드 수정까지 진행할 수 있다.`;
+  }
+
+  return `${base}\n\n${ROLE_LABELS[role]} 역할: 네 관점의 영향 범위, 수정 파일 후보, 설계 판단, 구현 순서, 위험 요소를 정리해라. 직접 코드는 수정하지 마라.`;
 }
 
 function shouldImplement(taskText) {
@@ -491,7 +586,7 @@ function makeCmuxGuide(runDir, roles) {
 
 function makeCommanderCollectPrompt(runDir, roles) {
   const roleList = roles.filter((role) => role !== 'commander');
-  return `~/ai-squad/global-rules.md와 ~/ai-squad/agents/commander.md를 기준으로 답변해줘.\n\n아래 역할 에이전트들의 결과를 내가 이어서 붙여넣을 거야.\n전부 받은 뒤 Codex에게 넘길 최종 구현 프롬프트를 만들어줘.\n\n대상 역할:\n${roleList.map((role) => `- ${ROLE_LABELS[role]}`).join('\n')}\n\n생성된 프롬프트 위치:\n- ${runDir}\n\n출력 형식:\n- 목표\n- 작업 범위\n- 역할별 결론 요약\n- 수정 파일 후보\n- 구현 순서\n- 위험 요소\n- Codex 실행 프롬프트\n- 검증 체크리스트\n`;
+  return `${path.join(ROOT, 'global-rules.md')}와 ${path.join(ROOT, 'agents/commander.md')}를 기준으로 답변해줘.\n\n아래 역할 에이전트들의 결과를 내가 이어서 붙여넣을 거야.\n전부 받은 뒤 Codex에게 넘길 최종 구현 프롬프트를 만들어줘.\n\n대상 역할:\n${roleList.map((role) => `- ${ROLE_LABELS[role]}`).join('\n')}\n\n생성된 프롬프트 위치:\n- ${runDir}\n\n출력 형식:\n- 목표\n- 작업 범위\n- 역할별 결론 요약\n- 수정 파일 후보\n- 구현 순서\n- 위험 요소\n- Codex 실행 프롬프트\n- 검증 체크리스트\n`;
 }
 
 function projectTargetFromArgs(args) {
@@ -800,6 +895,7 @@ async function askSquad(args) {
     task,
     send: true,
     submit: true,
+    wait: true,
   });
 }
 
@@ -828,7 +924,6 @@ async function dispatch(args) {
   const runId = makeRunId();
   const runDir = path.join(RUNS_DIR, runId);
   const resultsDir = path.join(runDir, 'results');
-  const contextBlock = await buildContextBlock(args.project, args.task);
 
   await mkdir(runDir, { recursive: true });
   await mkdir(resultsDir, { recursive: true });
@@ -847,9 +942,10 @@ async function dispatch(args) {
         role,
         mode,
         args.project,
-        contextBlock,
+        '',
         path.join(resultsDir, `${role}.md`),
         inferenceText,
+        runId,
       ),
       'utf8',
     );
@@ -890,6 +986,10 @@ async function dispatch(args) {
 
   if (args.send) {
     await send({ ...args, run: runDir });
+  }
+
+  if (args.wait) {
+    await waitForResults(runDir, roles, args.waitTimeout);
   }
 }
 
@@ -951,6 +1051,7 @@ async function setup(args) {
         project,
         createdAt: new Date().toISOString(),
         terminals: setupMap.terminals,
+        workspaces: setupMap.workspaces,
       },
       null,
       2,
@@ -1061,21 +1162,27 @@ function shellQuote(value) {
 }
 
 function workerBootPrompt(role, project) {
-  const roleLine = role === 'backend'
-    ? '- Backend Worker는 구현 지시를 받으면 실제 파일을 수정하는 구현 담당이다.'
+  const roleLine = ['backend', 'frontend'].includes(role)
+    ? `- ${ROLE_LABELS[role]} Worker는 구현 지시를 받으면 실제 파일을 수정하는 구현 담당이다.`
     : '- 구현 담당이 아니라면 코드 수정 없이 네 역할 관점의 분석/검토를 한다.';
+  const contextFiles = CONTEXT_FILES.map((file) => `- ${path.join(ROOT, file)}`).join('\n');
   return `너는 AI Squad의 ${ROLE_LABELS[role]} Worker다.
 
 기본 규칙:
-- ~/ai-squad/global-rules.md를 따른다.
-- ~/ai-squad/agents/${role}.md 역할을 따른다.
+- ${path.join(ROOT, 'global-rules.md')}를 따른다.
+- ${path.join(ROOT, 'agents', `${role}.md`)} 역할을 따른다.
 - 코드 프로젝트는 ${project} 이다.
 - Commander가 보낸 작업을 받으면 바로 분석한다.
 ${roleLine}
 - 결과 저장 지시가 있으면 반드시 해당 results/*.md 파일을 생성하거나 갱신한다.
 - 답변은 한국어로 간단명료하게 한다.
 
-대기 상태로 있어라. Commander가 작업을 보내면 바로 처리해라.`;
+프로젝트 문맥 파일:
+${contextFiles}
+
+부팅 직후에는 규칙 파일이나 프로젝트 파일을 읽지 말고 대기 응답만 해라.
+대기 상태에서는 "대기하겠습니다." 한 문장만 답해라.
+Commander가 실제 작업 프롬프트를 보내면 그때 필요한 규칙 파일과 프로젝트 파일을 읽고 바로 처리해라.`;
 }
 
 function commanderBootPrompt(project, kickoffTask = null) {
@@ -1087,8 +1194,8 @@ function commanderBootPrompt(project, kickoffTask = null) {
 
 \`\`\`bash
 sleep 10
-cd ~/ai-squad
-node bin/squad.mjs dispatch --project ${shellQuote(project)} --task ${shellQuote(kickoffTask)} --send --submit
+cd ${shellQuote(ROOT)}
+node bin/squad.mjs dispatch --project ${shellQuote(project)} --task ${shellQuote(kickoffTask)} --send --submit --wait
 \`\`\`
 
 시작 작업 내용:
@@ -1104,18 +1211,18 @@ ${kickoffTask}
 
 자동 분배 명령:
 \`\`\`bash
-cd ~/ai-squad
-node bin/squad.mjs dispatch --project ${shellQuote(project)} --task "사용자가 준 작업 내용" --send --submit
+cd ${shellQuote(ROOT)}
+node bin/squad.mjs dispatch --project ${shellQuote(project)} --task "사용자가 준 작업 내용" --send --submit --wait
 \`\`\`
 ${kickoffBlock}
 
 운영 규칙:
 1. 사용자가 새 작업을 말하면 작업을 한 문장으로 요약한다.
 2. 위 자동 분배 명령을 실행해서 worker들에게 작업을 보낸다.
-3. 구현/수정/추가/개발 작업이면 Backend Worker가 실제 구현 담당이다. Reviewer/Tester는 구현 이후 검토 담당이다.
-4. worker 답변을 기다린 뒤 핵심만 취합한다.
-5. 자동 분배 명령이 출력한 .squad-runs 경로 아래 results/*.md 파일을 읽어 worker 결과를 취합한다.
-6. 구현 작업이면 프로젝트 git diff와 results/backend.md 존재 여부를 확인한다.
+3. 구현/수정/추가/개발 작업이면 Backend/Frontend Worker가 실제 구현 담당이다. 화면/UI 작업은 Frontend가 구현하고, 서버/API 작업은 Backend가 구현한다. Reviewer/Planner는 사용자가 요청했거나 작업상 꼭 필요할 때만 호출한다.
+4. 자동 분배 명령은 worker 결과 파일이 생길 때까지 기다린다.
+5. 명령이 완료되면 출력된 .squad-runs 경로 아래 results/*.md 파일을 읽어 worker 결과를 취합한다.
+6. 구현 작업이면 프로젝트 git diff와 구현 담당 worker의 results/*.md 존재 여부를 확인한다.
 7. 사용자에게 구현 결과, 변경 파일, 위험 요소, 테스트 결과만 보고한다.
 8. 직접 구현하지 말고 worker 결과를 검증하고 취합한다.
 
@@ -1123,13 +1230,13 @@ ${kickoffBlock}
 - ${project}
 
 참고 문서:
-- ~/ai-squad/global-rules.md
-- ~/ai-squad/agents/commander.md
-- ~/ai-squad/ai/project-context.md
-- ~/ai-squad/ai/tech-stack.md
-- ~/ai-squad/ai/conventions.md
-- ~/ai-squad/ai/constraints.md
-- ~/ai-squad/ai/current-task.md
+- ${path.join(ROOT, 'global-rules.md')}
+- ${path.join(ROOT, 'agents/commander.md')}
+- ${path.join(ROOT, 'ai/project-context.md')}
+- ${path.join(ROOT, 'ai/tech-stack.md')}
+- ${path.join(ROOT, 'ai/conventions.md')}
+- ${path.join(ROOT, 'ai/constraints.md')}
+- ${path.join(ROOT, 'ai/current-task.md')}
 
 ${kickoffTask ? '시작 작업을 바로 실행하고, 이후에는 사용자 작업 지시를 기다려라.' : '이제 사용자의 작업 지시를 기다려라.'}`;
 }
@@ -1175,24 +1282,48 @@ async function resolveRunDir(run) {
 async function send(args) {
   const runDir = await resolveRunDir(args.run);
   const manifest = JSON.parse(await readFile(path.join(runDir, 'manifest.json'), 'utf8'));
-  const terminalMap = await loadTerminalMap(manifest.project);
-  const rolePayloads = [];
+  const squadState = await loadSquadState(manifest.project);
+  const missingRoles = [];
+  const matchedRoles = [];
+  let sentCount = 0;
 
-  for (const [index, role] of manifest.roles.entries()) {
+  const sendRoles = args.includeCommander
+    ? manifest.roles
+    : manifest.roles.filter((role) => role !== 'commander');
+
+  for (const role of sendRoles) {
+    const index = manifest.roles.indexOf(role);
     const filename = `${String(index + 1).padStart(2, '0')}-${role}.prompt.md`;
+    const workspaceId = squadState.workspaces?.[role] ?? '';
 
-    rolePayloads.push({
-      role,
-      aliases: ROLE_ALIASES[role] ?? [role],
-      file: path.join(runDir, filename),
-      terminalId: terminalMap[role] ?? '',
-      submit: args.submit,
-      dryRun: args.dryRun,
-    });
+    if (!workspaceId) {
+      missingRoles.push(role);
+      continue;
+    }
+
+    matchedRoles.push(`${role}->${workspaceId}`);
+
+    if (args.dryRun) {
+      continue;
+    }
+
+    const promptText = await readFile(path.join(runDir, filename), 'utf8');
+    runCmux(['send-key', '--workspace', workspaceId, 'ctrl+c'], `cancel pending input for ${role}`);
+    runCmux(['send-key', '--workspace', workspaceId, 'ctrl+u'], `clear pending input for ${role}`);
+    runCmux(['send', '--workspace', workspaceId, promptText], `send prompt to ${role}`);
+
+    if (args.submit) {
+      runCmux(['send-key', '--workspace', workspaceId, 'enter'], `submit prompt to ${role}`);
+    }
+
+    sentCount += 1;
   }
 
-  const script = makeSendAppleScript(rolePayloads);
-  const result = spawnSync('osascript', ['-e', script], {
+  console.log(`Matched: ${matchedRoles.join(', ')} / Sent prompts: ${sentCount} / Missing tabs: ${missingRoles.join(', ')}`);
+}
+
+function runCmux(args, description) {
+  const result = spawnSync(CMUX_CLI, args, {
     encoding: 'utf8',
     maxBuffer: 1024 * 1024 * 10,
   });
@@ -1202,91 +1333,64 @@ async function send(args) {
   }
 
   if (result.status !== 0) {
-    throw new Error(result.stderr.trim() || 'Failed to send prompts to cmux.');
+    throw new Error(`${description} failed: ${result.stderr.trim() || result.stdout.trim() || 'unknown cmux error'}`);
   }
-
-  console.log(result.stdout.trim());
 }
 
-async function loadTerminalMap(project) {
+async function loadSquadState(project) {
   try {
     const state = JSON.parse(await readFile(TERMINAL_MAP_FILE, 'utf8'));
     if (state.project && path.resolve(state.project) !== path.resolve(project)) {
       return {};
     }
-    return state.terminals ?? {};
+    return state;
   } catch {
     return {};
   }
 }
 
-function makeSendAppleScript(rolePayloads) {
-  return `
-set sentCount to 0
-set missingRoles to {}
-set matchedRoles to {}
+async function waitForResults(runDir, roles, timeoutSeconds = 900) {
+  const resultRoles = roles.filter((role) => role !== 'commander');
+  const runId = path.basename(runDir);
 
-tell application "cmux"
-  activate
-${rolePayloads.map((payload) => makeRoleAppleScript(payload)).join('\n')}
-end tell
+  if (!resultRoles.length) {
+    console.log('No worker results to wait for.');
+    return;
+  }
 
-set AppleScript's text item delimiters to ", "
-set missingText to missingRoles as text
-set matchedText to matchedRoles as text
-set AppleScript's text item delimiters to ""
+  const timeoutMs = Number.isFinite(timeoutSeconds) && timeoutSeconds > 0
+    ? timeoutSeconds * 1000
+    : 900000;
+  const deadline = Date.now() + timeoutMs;
 
-return "Matched: " & matchedText & " / Sent prompts: " & sentCount & " / Missing tabs: " & missingText
-`;
-}
+  console.log(`Waiting for worker results: ${resultRoles.join(', ')}`);
 
-function makeRoleAppleScript({ role, aliases, file, terminalId, submit, dryRun }) {
-  return `
-  set targetTerminal to missing value
-  set targetTabName to ""
-  repeat with w in windows
-    repeat with t in tabs of w
-      set tabName to name of t
-      repeat with term in terminals of t
-        set termName to name of term
-        if targetTerminal is missing value and ${appleString(terminalId)} is not "" and (id of term) is ${appleString(terminalId)} then
-          set targetTerminal to term
-          set targetTabName to tabName
-        end if
-${aliases
-  .map(
-    (alias) => `        if targetTerminal is missing value and termName contains ${appleString(alias)} then
-          set targetTerminal to term
-          set targetTabName to tabName
-        end if`,
-  )
-  .join('\n')}
-      end repeat
-${aliases
-  .map(
-    (alias) => `      if targetTerminal is missing value and tabName contains ${appleString(alias)} then
-        set targetTerminal to focused terminal of t
-        set targetTabName to tabName
-      end if`,
-  )
-  .join('\n')}
-    end repeat
-  end repeat
+  while (Date.now() < deadline) {
+    const pending = [];
 
-  if targetTerminal is missing value then
-    set end of missingRoles to ${appleString(role)}
-  else
-    set end of matchedRoles to ${appleString(role)} & "->" & targetTabName
-    if not ${dryRun ? 'true' : 'false'} then
-      set promptText to read POSIX file ${appleString(file)} as «class utf8»
-      if ${submit ? 'true' : 'false'} then
-        set promptText to promptText & return
-      end if
-      input text promptText to targetTerminal
-      set sentCount to sentCount + 1
-    end if
-  end if
-`;
+    for (const role of resultRoles) {
+      const resultPath = path.join(runDir, 'results', `${role}.md`);
+      const info = await stat(resultPath).catch(() => null);
+      if (!info || info.size === 0) {
+        pending.push(role);
+        continue;
+      }
+
+      const resultText = await readFile(resultPath, 'utf8').catch(() => '');
+      if (!resultText.includes(`작업 ID: ${runId}`)) {
+        pending.push(role);
+      }
+    }
+
+    if (!pending.length) {
+      console.log(`All worker results ready: ${path.join(runDir, 'results')}`);
+      return;
+    }
+
+    await sleep(5000);
+  }
+
+  throw new Error(`Timed out waiting for worker results in ${runDir}`);
 }
 
 function appleString(value) {
@@ -1304,13 +1408,13 @@ Usage:
 
 Lower-level commands:
   node bin/squad.mjs setup [--project /path/to/project] [--ai codex] [--model MODEL] [--role-models role=model,...] [--dry-run]
-  node bin/squad.mjs dispatch [--mode auto|feature|bugfix|release] [--project /path/to/project] [--roles planner,backend,database,frontend,infra,commander,reviewer,tester] [--task "extra instruction"] [--send] [--submit]
-  node bin/squad.mjs send [--run latest|/path/to/run] [--dry-run] [--submit]
+  node bin/squad.mjs dispatch [--mode auto|feature|bugfix|release] [--project /path/to/project] [--roles planner,backend,database,frontend,infra,commander,reviewer,tester] [--task "extra instruction"] [--send] [--submit] [--wait]
+  node bin/squad.mjs send [--run latest|/path/to/run] [--dry-run] [--submit] [--include-commander]
 
 Examples:
   squad new my-app --type next --approval request
   squad new my-app --type next --approval never
-  squad new my-app --type next --model gpt-5-mini --role-models commander=gpt-5.5,reviewer=gpt-5
+  squad new my-app --type next --model gpt-5.4-mini --role-models commander=gpt-5.5
   squad new mobile-app --type expo --task "Expo 앱 초기 구조 만들고 로그인 화면부터 시작" --approval never
   squad start /Users/james/daldale-api-backend --approval request
   squad ask "로그인 API 500 오류 수정"
