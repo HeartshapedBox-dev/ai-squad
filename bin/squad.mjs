@@ -3,7 +3,7 @@
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { readdir } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
-정import { setTimeout as sleep } from 'node:timers/promises';
+import { setTimeout as sleep } from 'node:timers/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -497,11 +497,321 @@ function makeRunId() {
   return `${safeIso}-${suffix}`;
 }
 
-function rolePrompt(role, mode, projectPath, _contextBlock, resultFile = null, taskText = '', runId = '') {
+const BOUNDARY_IGNORE_DIRS = new Set([
+  '.git',
+  '.next',
+  '.nuxt',
+  '.svelte-kit',
+  '.turbo',
+  '.squad-runs',
+  'build',
+  'coverage',
+  'dist',
+  'node_modules',
+  'out',
+  'target',
+]);
+
+async function discoverProjectBoundaries(projectPath) {
+  const files = await listProjectFiles(projectPath, 4, 2500).catch(() => []);
+  const boundaries = {
+    frontend_roots: new Set(),
+    backend_roots: new Set(),
+    data_roots: new Set(),
+    migration_roots: new Set(),
+    contract_roots: new Set(),
+    test_roots: new Set(),
+    shared_roots: new Set(),
+    infra_roots: new Set(),
+    config_files: new Set(),
+    generated_roots: new Set(),
+  };
+
+  for (const file of files) {
+    const normalized = file.replaceAll('\\', '/');
+    const segments = normalized.split('/');
+    const basename = segments.at(-1) ?? '';
+    const lower = normalized.toLowerCase();
+
+    if (isConfigFile(basename)) {
+      boundaries.config_files.add(normalized);
+    }
+    if (isGeneratedPath(lower)) {
+      boundaries.generated_roots.add(rootAtSegment(segments, ['generated', '__generated__', '.gen']) ?? topRoot(segments));
+    }
+    if (isTestPath(lower, basename)) {
+      boundaries.test_roots.add(rootAtSegment(segments, ['test', 'tests', '__tests__', 'spec', 'e2e']) ?? topRoot(segments));
+    }
+    if (isDataPath(lower, basename, segments)) {
+      boundaries.data_roots.add(rootAtSegment(segments, ['prisma', 'db', 'database', 'migrations', 'schema']) ?? topRoot(segments));
+    }
+    if (lower.includes('/migrations/') || segments.includes('migrations')) {
+      boundaries.migration_roots.add(rootAtSegment(segments, ['migrations']) ?? topRoot(segments));
+    }
+    if (isContractPath(lower, basename, segments)) {
+      boundaries.contract_roots.add(rootAtSegment(segments, ['proto', 'protos', 'contracts', 'schema', 'graphql']) ?? topRoot(segments));
+    }
+    if (isSharedPath(segments)) {
+      boundaries.shared_roots.add(rootAtSegment(segments, ['shared', 'common', 'types', 'dto', 'packages']) ?? topRoot(segments));
+    }
+    if (isInfraPath(lower, basename, segments)) {
+      boundaries.infra_roots.add(rootAtSegment(segments, ['infra', 'infrastructure', 'deploy', 'k8s', 'helm', '.github']) ?? topRoot(segments));
+    }
+    if (isFrontendPath(lower, basename, segments)) {
+      boundaries.frontend_roots.add(frontendRoot(segments));
+    }
+    if (isBackendPath(lower, basename, segments)) {
+      boundaries.backend_roots.add(backendRoot(segments));
+    }
+  }
+
+  return Object.fromEntries(
+    Object.entries(boundaries).map(([key, value]) => [key, [...value].filter(Boolean).sort()]),
+  );
+}
+
+async function listProjectFiles(projectPath, maxDepth, maxEntries) {
+  const files = [];
+
+  async function walk(dir, depth) {
+    if (files.length >= maxEntries || depth > maxDepth) {
+      return;
+    }
+
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (files.length >= maxEntries) {
+        return;
+      }
+
+      const absolute = path.join(dir, entry.name);
+      const relative = path.relative(projectPath, absolute);
+      if (!relative || relative.startsWith('..')) {
+        continue;
+      }
+
+      if (entry.isDirectory()) {
+        if (!BOUNDARY_IGNORE_DIRS.has(entry.name)) {
+          await walk(absolute, depth + 1);
+        }
+        continue;
+      }
+
+      if (entry.isFile()) {
+        files.push(relative);
+      }
+    }
+  }
+
+  await walk(projectPath, 0);
+  return files;
+}
+
+function isConfigFile(basename) {
+  return [
+    'package.json',
+    'pnpm-lock.yaml',
+    'package-lock.json',
+    'yarn.lock',
+    'tsconfig.json',
+    'next.config.js',
+    'next.config.mjs',
+    'vite.config.js',
+    'vite.config.ts',
+    'docker-compose.yml',
+    'docker-compose.yaml',
+    'Dockerfile',
+  ].includes(basename);
+}
+
+function isGeneratedPath(lower) {
+  return lower.includes('/generated/')
+    || lower.includes('/__generated__/')
+    || lower.includes('/.gen/')
+    || lower.endsWith('.generated.ts')
+    || lower.endsWith('.generated.tsx');
+}
+
+function isTestPath(lower, basename) {
+  return lower.includes('/__tests__/')
+    || lower.includes('/test/')
+    || lower.includes('/tests/')
+    || lower.includes('/spec/')
+    || lower.includes('/e2e/')
+    || basename.endsWith('.test.ts')
+    || basename.endsWith('.test.tsx')
+    || basename.endsWith('.spec.ts')
+    || basename.endsWith('.spec.tsx');
+}
+
+function isDataPath(lower, basename, segments) {
+  return segments.includes('prisma')
+    || segments.includes('database')
+    || segments.includes('migrations')
+    || basename === 'schema.prisma'
+    || lower.endsWith('.migration.ts')
+    || lower.endsWith('.entity.ts')
+    || lower.endsWith('.model.ts');
+}
+
+function isContractPath(lower, basename, segments) {
+  return segments.includes('proto')
+    || segments.includes('protos')
+    || segments.includes('contracts')
+    || lower.includes('openapi')
+    || lower.includes('swagger')
+    || basename.endsWith('.proto')
+    || basename.endsWith('.graphql')
+    || basename.endsWith('.gql');
+}
+
+function isSharedPath(segments) {
+  return segments.some((segment) => ['shared', 'common', 'types', 'dto', 'packages'].includes(segment));
+}
+
+function isInfraPath(lower, basename, segments) {
+  return segments.some((segment) => ['infra', 'infrastructure', 'deploy', 'k8s', 'helm', '.github'].includes(segment))
+    || basename === 'Dockerfile'
+    || lower.includes('docker-compose')
+    || lower.endsWith('.tf')
+    || lower.endsWith('.yaml') && lower.includes('/k8s/');
+}
+
+function isFrontendPath(lower, basename, segments) {
+  return segments.some((segment) => ['frontend', 'front', 'client', 'web', 'pages', 'components'].includes(segment))
+    || basename.startsWith('next.config.')
+    || basename.startsWith('vite.config.')
+    || lower.includes('/app/')
+    || lower.includes('/src/app/')
+    || lower.includes('/src/pages/')
+    || lower.includes('/src/components/')
+    || lower.endsWith('.tsx')
+    || lower.endsWith('.jsx');
+}
+
+function isBackendPath(lower, basename, segments) {
+  return segments.some((segment) => ['backend', 'server', 'api'].includes(segment))
+    || basename.endsWith('.controller.ts')
+    || basename.endsWith('.service.ts')
+    || basename.endsWith('.resolver.ts')
+    || basename.endsWith('.module.ts')
+    || lower.includes('/routes/')
+    || lower.includes('/controllers/')
+    || lower.includes('/services/');
+}
+
+function frontendRoot(segments) {
+  if (segments[0] === 'src' && ['app', 'pages', 'components'].includes(segments[1])) {
+    return segments.slice(0, 2).join('/');
+  }
+  return rootAtSegment(segments, ['frontend', 'front', 'client', 'web']) ?? topRoot(segments);
+}
+
+function backendRoot(segments) {
+  if (segments[0] === 'src' && ['controllers', 'services', 'routes', 'api'].includes(segments[1])) {
+    return segments.slice(0, 2).join('/');
+  }
+  if (segments[0] === 'src') {
+    return 'src';
+  }
+  return rootAtSegment(segments, ['backend', 'server', 'api']) ?? topRoot(segments);
+}
+
+function rootAtSegment(segments, names) {
+  const index = segments.findIndex((segment) => names.includes(segment));
+  if (index === -1) {
+    return null;
+  }
+  return segments.slice(0, index + 1).join('/');
+}
+
+function topRoot(segments) {
+  if (segments.length >= 2 && ['apps', 'packages', 'services'].includes(segments[0])) {
+    return segments.slice(0, 2).join('/');
+  }
+  return segments[0] ?? '.';
+}
+
+function makeRoleScopeContract(role, boundaries) {
+  const exclusive = unique([
+    ...boundaries.migration_roots,
+    ...boundaries.data_roots,
+    ...boundaries.contract_roots,
+    ...boundaries.generated_roots,
+    ...boundaries.config_files,
+  ]);
+  const allowed = allowedPathsForRole(role, boundaries);
+  const denied = deniedPathsForRole(role, boundaries, exclusive);
+
+  return [
+    'Worker Scope Contract:',
+    '- 이 범위는 현재 프로젝트를 dispatch 시점에 스캔해 만든 동적 경계다. 경로가 비어 있거나 부정확해 보이면 먼저 프로젝트 구조를 확인하고 결과 파일에 보정안을 적어라.',
+    '- allowed_paths 밖 파일은 수정하지 마라. 필요한 변경이 있으면 "cross-boundary request"로 파일과 이유만 보고해라.',
+    '- exclusive_artifacts는 한 작업에서 단일 owner만 수정한다. Commander가 명시하지 않았으면 직접 수정하지 마라.',
+    '- 결과 파일에는 changed_files, skipped_cross_boundary_changes, verification을 반드시 적어라.',
+    '',
+    `role: ${role}`,
+    `allowed_paths:\n${formatList(allowed)}`,
+    `denied_paths:\n${formatList(denied)}`,
+    `exclusive_artifacts:\n${formatList(exclusive)}`,
+    '',
+    'Repo Boundary Map:',
+    JSON.stringify(boundaries, null, 2),
+  ].join('\n');
+}
+
+function allowedPathsForRole(role, boundaries) {
+  if (role === 'frontend') {
+    return unique([...boundaries.frontend_roots, ...boundaries.test_roots]);
+  }
+  if (role === 'backend') {
+    return unique([...boundaries.backend_roots, ...boundaries.test_roots]);
+  }
+  if (role === 'database') {
+    return unique([...boundaries.data_roots, ...boundaries.migration_roots]);
+  }
+  if (role === 'infra') {
+    return unique([...boundaries.infra_roots]);
+  }
+  if (role === 'tester') {
+    return unique([...boundaries.test_roots]);
+  }
+  return [];
+}
+
+function deniedPathsForRole(role, boundaries, exclusive) {
+  if (['commander', 'planner', 'reviewer'].includes(role)) {
+    return ['*'];
+  }
+
+  const roleOwned = new Set(allowedPathsForRole(role, boundaries));
+  return unique([
+    ...boundaries.frontend_roots,
+    ...boundaries.backend_roots,
+    ...boundaries.data_roots,
+    ...boundaries.migration_roots,
+    ...boundaries.contract_roots,
+    ...boundaries.infra_roots,
+    ...exclusive,
+  ]).filter((item) => !roleOwned.has(item));
+}
+
+function formatList(items) {
+  return items.length ? items.map((item) => `- ${item}`).join('\n') : '- (none detected; treat as read-only until Commander grants exact paths)';
+}
+
+function unique(items) {
+  return [...new Set(items.filter(Boolean))].sort();
+}
+
+function rolePrompt(role, mode, projectPath, contextBlock = '', resultFile = null, taskText = '', runId = '') {
   const implement = shouldImplement(taskText);
   const resultInstruction = resultFile
     ? `결과 저장: ${resultFile}\n결과 파일 첫 줄: 작업 ID: ${runId}`
     : '결과 파일 저장 없음';
+  const boundaryInstruction = contextBlock
+    ? `\n\n${contextBlock}`
+    : '';
 
   const base = [
     `작업 ID: ${runId}`,
@@ -513,10 +823,10 @@ function rolePrompt(role, mode, projectPath, _contextBlock, resultFile = null, t
     '작업 전 반드시 부팅 때 안내받은 global-rules.md와 agents/<role>.md를 확인하고, 위반 가능성이 있으면 중단해라.',
     '필요하면 부팅 때 안내받은 규칙/역할/프로젝트 문맥 파일을 읽어라.',
     '답변과 결과 파일 마지막에는 결론, 영향 범위, 위험 요소, 다음 역할에게 넘길 내용을 짧게 정리해라.',
-  ].join('\n');
+  ].join('\n') + boundaryInstruction;
 
   if (role === 'commander') {
-    return `${base}\n\nCommander 역할: worker 결과를 취합해서 최종 구현 프롬프트와 검증 체크리스트를 만들어라. 직접 코드 수정은 하지 마라.`;
+    return `${base}\n\nCommander 역할: worker 결과를 취합해서 최종 구현 프롬프트와 검증 체크리스트를 만들어라. 직접 코드 수정은 하지 마라. worker별 changed_files가 허용 범위를 벗어났거나 exclusive artifact를 여러 worker가 수정했으면 merge하지 말고 재분배해라.`;
   }
 
   if (role === 'reviewer') {
@@ -528,15 +838,15 @@ function rolePrompt(role, mode, projectPath, _contextBlock, resultFile = null, t
   }
 
   if (role === 'backend' && implement) {
-    return `${base}\n\nBackend 역할: 실제 구현 담당이다. 기존 구조를 확인하고 최소 변경으로 구현해라. DB 변경, 검증 명령, 변경 파일을 결과에 명시해라.`;
+    return `${base}\n\nBackend 역할: 실제 구현 담당이다. 기존 구조를 확인하고 최소 변경으로 구현해라. 단, 아래 Worker Scope Contract의 allowed_paths 밖 파일은 수정하지 말고 필요한 변경을 보고만 해라. DB schema/migration/API contract/generated/lockfile 변경은 Commander가 별도 승인하지 않았으면 직접 만들지 마라. 검증 명령과 변경 파일을 결과에 명시해라.`;
   }
 
   if (role === 'frontend' && implement) {
-    return `${base}\n\nFrontend 역할: 실제 구현 담당이다. 기존 UI 구조와 스타일을 확인하고 최소 변경으로 구현해라. 컴포넌트, 페이지, 스타일, 상태 처리 변경과 검증 명령을 결과에 명시해라.`;
+    return `${base}\n\nFrontend 역할: 실제 구현 담당이다. 기존 UI 구조와 스타일을 확인하고 최소 변경으로 구현해라. 단, 아래 Worker Scope Contract의 allowed_paths 밖 파일은 수정하지 말고 필요한 변경을 보고만 해라. API/server/DB schema/migration/API contract/generated/lockfile 변경은 Commander가 별도 승인하지 않았으면 직접 만들지 마라. 컴포넌트, 페이지, 스타일, 상태 처리 변경과 검증 명령을 결과에 명시해라.`;
   }
 
   if (['backend', 'frontend'].includes(role)) {
-    return `${base}\n\n${ROLE_LABELS[role]} 역할: 네 관점의 영향 범위, 수정 파일 후보, 설계 판단, 구현 순서, 위험 요소를 정리해라. 구현 지시가 명확하면 실제 코드 수정까지 진행할 수 있다.`;
+    return `${base}\n\n${ROLE_LABELS[role]} 역할: 네 관점의 영향 범위, 수정 파일 후보, 설계 판단, 구현 순서, 위험 요소를 정리해라. 구현 지시가 명확하면 실제 코드 수정까지 진행할 수 있지만, 아래 Worker Scope Contract의 allowed_paths 밖 파일은 수정하지 마라.`;
   }
 
   return `${base}\n\n${ROLE_LABELS[role]} 역할: 네 관점의 영향 범위, 수정 파일 후보, 설계 판단, 구현 순서, 위험 요소를 정리해라. 직접 코드는 수정하지 마라.`;
@@ -586,7 +896,7 @@ function makeCmuxGuide(runDir, roles) {
 
 function makeCommanderCollectPrompt(runDir, roles) {
   const roleList = roles.filter((role) => role !== 'commander');
-  return `${path.join(ROOT, 'global-rules.md')}와 ${path.join(ROOT, 'agents/commander.md')}를 기준으로 답변해줘.\n\n아래 역할 에이전트들의 결과를 내가 이어서 붙여넣을 거야.\n전부 받은 뒤 Codex에게 넘길 최종 구현 프롬프트를 만들어줘.\n\n대상 역할:\n${roleList.map((role) => `- ${ROLE_LABELS[role]}`).join('\n')}\n\n생성된 프롬프트 위치:\n- ${runDir}\n\n출력 형식:\n- 목표\n- 작업 범위\n- 역할별 결론 요약\n- 수정 파일 후보\n- 구현 순서\n- 위험 요소\n- Codex 실행 프롬프트\n- 검증 체크리스트\n`;
+  return `${path.join(ROOT, 'global-rules.md')}와 ${path.join(ROOT, 'agents/commander.md')}를 기준으로 답변해줘.\n\n아래 역할 에이전트들의 결과를 내가 이어서 붙여넣을 거야.\n전부 받은 뒤 Codex에게 넘길 최종 구현 프롬프트를 만들어줘.\n\n대상 역할:\n${roleList.map((role) => `- ${ROLE_LABELS[role]}`).join('\n')}\n\n생성된 프롬프트 위치:\n- ${runDir}\n\n출력 형식:\n- 목표\n- 작업 범위\n- 역할별 결론 요약\n- 수정 파일 후보\n- 구현 순서\n- Ownership plan\n- Exclusive artifact owner\n- 위험 요소\n- Codex 실행 프롬프트\n- 검증 체크리스트\n\n취합 규칙:\n- manifest.json과 각 worker prompt의 Worker Scope Contract를 확인해라.\n- worker 결과의 changed_files가 allowed_paths 안에 있는지 확인해라.\n- allowed_paths 밖 수정, migration/schema/API contract/generated/lockfile 중복 수정, 같은 심볼 중복 구현이 있으면 merge 금지와 재분배 지시를 넣어라.\n- DB schema/migration, API contract, generated file, lockfile은 단일 owner만 수정하게 해라.\n`;
 }
 
 function projectTargetFromArgs(args) {
@@ -924,6 +1234,7 @@ async function dispatch(args) {
   const runId = makeRunId();
   const runDir = path.join(RUNS_DIR, runId);
   const resultsDir = path.join(runDir, 'results');
+  const boundaries = await discoverProjectBoundaries(args.project);
 
   await mkdir(runDir, { recursive: true });
   await mkdir(resultsDir, { recursive: true });
@@ -942,7 +1253,7 @@ async function dispatch(args) {
         role,
         mode,
         args.project,
-        '',
+        makeRoleScopeContract(role, boundaries),
         path.join(resultsDir, `${role}.md`),
         inferenceText,
         runId,
@@ -968,6 +1279,7 @@ async function dispatch(args) {
         project: args.project,
         inferenceText,
         roles,
+        boundaries,
         files: roles.map((role, index) => `${String(index + 1).padStart(2, '0')}-${role}.prompt.md`),
       },
       null,
@@ -1173,6 +1485,7 @@ function workerBootPrompt(role, project) {
 - ${path.join(ROOT, 'agents', `${role}.md`)} 역할을 따른다.
 - 코드 프로젝트는 ${project} 이다.
 - Commander가 보낸 작업을 받으면 바로 분석한다.
+- 실제 작업 프롬프트에 Worker Scope Contract가 있으면 그 allowed_paths만 수정한다. 범위 밖 변경이 필요하면 직접 고치지 말고 cross-boundary request로 보고한다.
 ${roleLine}
 - 결과 저장 지시가 있으면 반드시 해당 results/*.md 파일을 생성하거나 갱신한다.
 - 답변은 한국어로 간단명료하게 한다.
@@ -1218,13 +1531,17 @@ ${kickoffBlock}
 
 운영 규칙:
 1. 사용자가 새 작업을 말하면 작업을 한 문장으로 요약한다.
-2. 위 자동 분배 명령을 실행해서 worker들에게 작업을 보낸다.
+2. 위 자동 분배 명령을 실행해서 worker들에게 작업을 보낸다. dispatch는 프로젝트 구조를 스캔해 worker별 Worker Scope Contract를 프롬프트에 포함한다.
 3. 구현/수정/추가/개발 작업이면 Backend/Frontend Worker가 실제 구현 담당이다. 화면/UI 작업은 Frontend가 구현하고, 서버/API 작업은 Backend가 구현한다. Reviewer/Planner는 사용자가 요청했거나 작업상 꼭 필요할 때만 호출한다.
-4. 자동 분배 명령은 worker 결과 파일이 생길 때까지 기다린다.
-5. 명령이 완료되면 출력된 .squad-runs 경로 아래 results/*.md 파일을 읽어 worker 결과를 취합한다.
-6. 구현 작업이면 프로젝트 git diff와 구현 담당 worker의 results/*.md 존재 여부를 확인한다.
-7. 사용자에게 구현 결과, 변경 파일, 위험 요소, 테스트 결과만 보고한다.
-8. 직접 구현하지 말고 worker 결과를 검증하고 취합한다.
+4. DB schema/migration, API contract, generated file, lockfile, 빌드/배포 설정은 exclusive artifact로 보고 단일 owner에게만 맡긴다.
+5. API contract나 DB 변경이 필요하면 병렬 구현보다 DB/contract owner → backend → frontend → tester 순서로 진행한다.
+6. 자동 분배 명령은 worker 결과 파일이 생길 때까지 기다린다.
+7. 명령이 완료되면 출력된 .squad-runs 경로 아래 manifest.json과 results/*.md 파일을 읽어 worker 결과를 취합한다.
+8. 구현 작업이면 프로젝트 git diff와 구현 담당 worker의 results/*.md 존재 여부를 확인한다.
+9. changed_files가 Worker Scope Contract의 allowed_paths 밖이면 좋은 수정이어도 merge하지 말고 cross-boundary request로 재분배한다.
+10. 중복 migration, 중복 메서드/심볼, 서로 다른 API contract 수정, exclusive artifact 복수 수정 여부를 확인한다.
+11. 사용자에게 구현 결과, 변경 파일, 위험 요소, 테스트 결과만 보고한다.
+12. 직접 구현하지 말고 worker 결과를 검증하고 취합한다.
 
 프로젝트:
 - ${project}
