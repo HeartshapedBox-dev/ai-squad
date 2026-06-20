@@ -215,12 +215,70 @@ async function resolveWorkspace(args) {
   }
 
   const project = path.resolve(expandHome(args.project ?? process.cwd()));
+  const inferred = await inferWorkspaceFromProject(project);
+  if (inferred) {
+    return inferred;
+  }
+
   return {
     source: null,
     primaryProject: project,
     projects: { default: project },
     roleProjects: Object.fromEntries(ROLE_ORDER.map((role) => [role, 'default'])),
   };
+}
+
+async function inferWorkspaceFromProject(project) {
+  const boundaries = await discoverProjectBoundaries(project);
+  const frontendRoot = chooseBoundaryRoot(boundaries.frontend_roots);
+  const backendRoot = chooseBoundaryRoot(boundaries.backend_roots);
+  const dataRoot = chooseBoundaryRoot([...boundaries.data_roots, ...boundaries.migration_roots]);
+  const infraRoot = chooseBoundaryRoot(boundaries.infra_roots);
+
+  if (!frontendRoot || !backendRoot || frontendRoot === backendRoot) {
+    return null;
+  }
+
+  const projects = {
+    root: project,
+    backend: path.join(project, backendRoot),
+    frontend: path.join(project, frontendRoot),
+  };
+
+  if (dataRoot && dataRoot !== backendRoot) {
+    projects.database = path.join(project, dataRoot);
+  }
+  if (infraRoot && infraRoot !== backendRoot && infraRoot !== frontendRoot) {
+    projects.infra = path.join(project, infraRoot);
+  }
+
+  return {
+    source: null,
+    inferred: true,
+    primaryProject: project,
+    primaryProjectKey: 'root',
+    projects,
+    roleProjects: {
+      planner: 'root',
+      backend: 'backend',
+      database: projects.database ? 'database' : 'backend',
+      frontend: 'frontend',
+      infra: projects.infra ? 'infra' : 'root',
+      commander: 'root',
+      reviewer: 'root',
+      tester: 'root',
+    },
+  };
+}
+
+function chooseBoundaryRoot(roots) {
+  const candidates = unique(roots)
+    .filter((root) => root && root !== '.' && root !== 'package.json')
+    .sort((a, b) => {
+      const depthDiff = a.split('/').length - b.split('/').length;
+      return depthDiff || a.localeCompare(b);
+    });
+  return candidates[0] ?? null;
 }
 
 async function loadWorkspaceFile(workspacePath) {
@@ -286,9 +344,14 @@ function workspaceProjectDirs(workspace) {
   return unique(Object.values(workspace.projects).map((projectPath) => path.resolve(projectPath)));
 }
 
+function isRoleScopedWorkspace(workspace) {
+  return Boolean(workspace.source || workspace.inferred);
+}
+
 function workspaceForManifest(workspace) {
   return {
     source: workspace.source,
+    inferred: Boolean(workspace.inferred),
     primaryProject: workspace.primaryProject,
     primaryProjectKey: workspace.primaryProjectKey ?? 'default',
     projects: workspace.projects,
@@ -861,6 +924,114 @@ function makeRoleScopeContract(role, boundaries, roleProject, workspace) {
   ].join('\n');
 }
 
+function makeHandoffContract(role, handoffDir) {
+  const writes = handoffFilesForRole(role, handoffDir);
+  const reads = handoffReadFilesForRole(role, handoffDir);
+
+  return [
+    'Handoff Contract:',
+    '- 다른 역할이나 다른 프로젝트의 수정이 필요하면 상대 프로젝트를 직접 수정하지 말고 handoff 파일에 기록해라.',
+    '- API request/response, route, validation, shared type, env, generated client 변경은 contract.md에 기록해라.',
+    '- handoff에는 changed_files, requested_changes, contract_changes, verification_notes를 짧고 구체적으로 적어라.',
+    '- 구현 전에 read_files에 내용이 있으면 먼저 읽고, 그 계약에 맞춰 자기 assigned_project 안에서만 수정해라.',
+    '',
+    `handoff_dir: ${handoffDir}`,
+    `write_files:\n${formatList(writes)}`,
+    `read_files:\n${formatList(reads)}`,
+  ].join('\n');
+}
+
+function handoffFilesForRole(role, handoffDir) {
+  if (role === 'frontend') {
+    return [
+      path.join(handoffDir, 'frontend-to-backend.md'),
+      path.join(handoffDir, 'contract.md'),
+    ];
+  }
+  if (role === 'backend') {
+    return [
+      path.join(handoffDir, 'backend-to-frontend.md'),
+      path.join(handoffDir, 'contract.md'),
+    ];
+  }
+  if (role === 'database') {
+    return [
+      path.join(handoffDir, 'database-to-backend.md'),
+      path.join(handoffDir, 'contract.md'),
+    ];
+  }
+  if (role === 'tester') {
+    return [
+      path.join(handoffDir, 'tester-notes.md'),
+    ];
+  }
+  return [
+    path.join(handoffDir, `${role}-notes.md`),
+  ];
+}
+
+function handoffReadFilesForRole(role, handoffDir) {
+  if (role === 'frontend') {
+    return [
+      path.join(handoffDir, 'backend-to-frontend.md'),
+      path.join(handoffDir, 'contract.md'),
+    ];
+  }
+  if (role === 'backend') {
+    return [
+      path.join(handoffDir, 'frontend-to-backend.md'),
+      path.join(handoffDir, 'database-to-backend.md'),
+      path.join(handoffDir, 'contract.md'),
+    ];
+  }
+  if (role === 'database') {
+    return [
+      path.join(handoffDir, 'backend-to-database.md'),
+      path.join(handoffDir, 'contract.md'),
+    ];
+  }
+  if (role === 'tester') {
+    return [
+      path.join(handoffDir, 'backend-to-frontend.md'),
+      path.join(handoffDir, 'frontend-to-backend.md'),
+      path.join(handoffDir, 'database-to-backend.md'),
+      path.join(handoffDir, 'contract.md'),
+    ];
+  }
+  return [
+    path.join(handoffDir, 'contract.md'),
+  ];
+}
+
+function initialHandoffFile(name) {
+  return `# ${name}
+
+작업 중 다른 역할에게 넘길 계약/요청이 있으면 이 파일에 추가한다.
+
+## Entries
+
+- 없음
+`;
+}
+
+async function writeInitialHandoffFiles(handoffDir) {
+  const files = [
+    'backend-to-frontend.md',
+    'frontend-to-backend.md',
+    'backend-to-database.md',
+    'database-to-backend.md',
+    'contract.md',
+    'tester-notes.md',
+  ];
+
+  for (const file of files) {
+    const title = file === 'contract.md'
+      ? 'Contract'
+      : file.replace('.md', '');
+    await writeFile(path.join(handoffDir, file), initialHandoffFile(title), 'utf8');
+  }
+}
+
 function allowedPathsForRole(role, boundaries) {
   if (role === 'frontend') {
     return unique([...boundaries.frontend_roots, ...boundaries.test_roots]);
@@ -995,9 +1166,9 @@ function makeCmuxGuide(runDir, roles) {
   return `${lines.join('\n')}\n`;
 }
 
-function makeCommanderCollectPrompt(runDir, roles) {
+function makeCommanderCollectPrompt(runDir, roles, handoffDir) {
   const roleList = roles.filter((role) => role !== 'commander');
-  return `${path.join(ROOT, 'global-rules.md')}와 ${path.join(ROOT, 'agents/commander.md')}를 기준으로 답변해줘.\n\n아래 역할 에이전트들의 결과를 내가 이어서 붙여넣을 거야.\n전부 받은 뒤 Codex에게 넘길 최종 구현 프롬프트를 만들어줘.\n\n대상 역할:\n${roleList.map((role) => `- ${ROLE_LABELS[role]}`).join('\n')}\n\n생성된 프롬프트 위치:\n- ${runDir}\n\n출력 형식:\n- 목표\n- 작업 범위\n- 역할별 결론 요약\n- 수정 파일 후보\n- 구현 순서\n- Ownership plan\n- Exclusive artifact owner\n- 위험 요소\n- Codex 실행 프롬프트\n- 검증 체크리스트\n\n취합 규칙:\n- manifest.json과 각 worker prompt의 Worker Scope Contract를 확인해라.\n- worker 결과의 changed_files가 allowed_paths 안에 있는지 확인해라.\n- allowed_paths 밖 수정, migration/schema/API contract/generated/lockfile 중복 수정, 같은 심볼 중복 구현이 있으면 merge 금지와 재분배 지시를 넣어라.\n- DB schema/migration, API contract, generated file, lockfile은 단일 owner만 수정하게 해라.\n`;
+  return `${path.join(ROOT, 'global-rules.md')}와 ${path.join(ROOT, 'agents/commander.md')}를 기준으로 답변해줘.\n\n아래 역할 에이전트들의 결과를 내가 이어서 붙여넣을 거야.\n전부 받은 뒤 Codex에게 넘길 최종 구현 프롬프트를 만들어줘.\n\n대상 역할:\n${roleList.map((role) => `- ${ROLE_LABELS[role]}`).join('\n')}\n\n생성된 프롬프트 위치:\n- ${runDir}\n\nHandoff 위치:\n- ${handoffDir}\n\n출력 형식:\n- 목표\n- 작업 범위\n- 역할별 결론 요약\n- Handoff 요약\n- Contract 변경\n- 수정 파일 후보\n- 구현 순서\n- Ownership plan\n- Exclusive artifact owner\n- 위험 요소\n- Codex 실행 프롬프트\n- 검증 체크리스트\n\n취합 규칙:\n- manifest.json과 각 worker prompt의 Worker Scope Contract를 확인해라.\n- ${handoffDir} 아래의 handoff 파일을 반드시 읽고, 상대 역할에 넘겨야 할 요청이 있으면 후속 분배 지시를 작성해라.\n- worker 결과의 changed_files가 allowed_paths 안에 있는지 확인해라.\n- allowed_paths 밖 수정, migration/schema/API contract/generated/lockfile 중복 수정, 같은 심볼 중복 구현이 있으면 merge 금지와 재분배 지시를 넣어라.\n- DB schema/migration, API contract, generated file, lockfile은 단일 owner만 수정하게 해라.\n- contract.md에 API/타입/환경변수 변경이 있으면 backend/frontend/database/tester 중 필요한 다음 역할을 순차로 다시 호출해라.\n`;
 }
 
 function projectTargetFromArgs(args) {
@@ -1362,6 +1533,7 @@ async function dispatch(args) {
   const runId = makeRunId();
   const runDir = path.join(RUNS_DIR, runId);
   const resultsDir = path.join(runDir, 'results');
+  const handoffDir = path.join(runDir, 'handoff');
   const boundariesByProject = {};
 
   for (const projectPath of workspaceProjectDirs(workspace)) {
@@ -1370,6 +1542,8 @@ async function dispatch(args) {
 
   await mkdir(runDir, { recursive: true });
   await mkdir(resultsDir, { recursive: true });
+  await mkdir(handoffDir, { recursive: true });
+  await writeInitialHandoffFiles(handoffDir);
 
   const workflowFile = WORKFLOW_FILES[mode];
   if (workflowFile) {
@@ -1387,7 +1561,10 @@ async function dispatch(args) {
         role,
         mode,
         roleProject,
-        makeRoleScopeContract(role, boundaries, roleProject, workspace),
+        [
+          makeRoleScopeContract(role, boundaries, roleProject, workspace),
+          makeHandoffContract(role, handoffDir),
+        ].join('\n\n'),
         path.join(resultsDir, `${role}.md`),
         inferenceText,
         runId,
@@ -1398,7 +1575,7 @@ async function dispatch(args) {
 
   await writeFile(
     path.join(runDir, 'commander.collect.prompt.md'),
-    makeCommanderCollectPrompt(runDir, roles),
+    makeCommanderCollectPrompt(runDir, roles, handoffDir),
     'utf8',
   );
 
@@ -1414,6 +1591,7 @@ async function dispatch(args) {
         workspace: workspaceForManifest(workspace),
         inferenceText,
         roles,
+        handoffDir,
         boundariesByProject,
         roleProjects: Object.fromEntries(roles.map((role) => [role, projectForRole(workspace, role)])),
         files: roles.map((role, index) => `${String(index + 1).padStart(2, '0')}-${role}.prompt.md`),
@@ -1481,7 +1659,7 @@ async function setup(args) {
         args.approval,
         model,
         role === 'commander' ? workspaceProjectDirs(workspace) : [],
-        !workspace.source || role === 'commander',
+        !isRoleScopedWorkspace(workspace) || role === 'commander',
       ),
       'utf8',
     );
@@ -1647,6 +1825,7 @@ function workerBootPrompt(role, project) {
 - 코드 프로젝트는 ${project} 이다.
 - Commander가 보낸 작업을 받으면 바로 분석한다.
 - 실제 작업 프롬프트에 Worker Scope Contract가 있으면 그 allowed_paths만 수정한다. 범위 밖 변경이 필요하면 직접 고치지 말고 cross-boundary request로 보고한다.
+- 실제 작업 프롬프트에 Handoff Contract가 있으면 read_files를 먼저 확인하고, 다른 역할/프로젝트 변경 요청은 write_files에 기록한다.
 ${roleLine}
 - 결과 저장 지시가 있으면 반드시 해당 results/*.md 파일을 생성하거나 갱신한다.
 - 답변은 한국어로 간단명료하게 한다.
@@ -1706,11 +1885,12 @@ ${kickoffBlock}
 5. API contract나 DB 변경이 필요하면 병렬 구현보다 DB/contract owner → backend → frontend → tester 순서로 진행한다.
 6. 자동 분배 명령은 worker 결과 파일이 생길 때까지 기다린다.
 7. 명령이 완료되면 출력된 .squad-runs 경로 아래 manifest.json과 results/*.md 파일을 읽어 worker 결과를 취합한다.
-8. 구현 작업이면 프로젝트 git diff와 구현 담당 worker의 results/*.md 존재 여부를 확인한다.
-9. changed_files가 Worker Scope Contract의 allowed_paths 밖이면 좋은 수정이어도 merge하지 말고 cross-boundary request로 재분배한다.
-10. 중복 migration, 중복 메서드/심볼, 서로 다른 API contract 수정, exclusive artifact 복수 수정 여부를 확인한다.
-11. 사용자에게 구현 결과, 변경 파일, 위험 요소, 테스트 결과만 보고한다.
-12. 직접 구현하지 말고 worker 결과를 검증하고 취합한다.
+8. .squad-runs 경로 아래 handoff/*.md를 반드시 읽는다. handoff에 상대 역할 요청이나 contract 변경이 있으면 필요한 worker에게 후속 작업을 순차 분배한다.
+9. 구현 작업이면 프로젝트 git diff와 구현 담당 worker의 results/*.md 존재 여부를 확인한다.
+10. changed_files가 Worker Scope Contract의 allowed_paths 밖이면 좋은 수정이어도 merge하지 말고 cross-boundary request로 재분배한다.
+11. 중복 migration, 중복 메서드/심볼, 서로 다른 API contract 수정, exclusive artifact 복수 수정 여부를 확인한다.
+12. 사용자에게 구현 결과, 변경 파일, handoff/contract 변경, 위험 요소, 테스트 결과만 보고한다.
+13. 직접 구현하지 말고 worker 결과와 handoff를 검증하고 취합한다.
 
 프로젝트:
 - ${project}

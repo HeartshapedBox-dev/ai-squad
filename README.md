@@ -162,6 +162,15 @@ squad new my-app --type next --approval request
 squad start /path/to/current-project --approval request
 ```
 
+프로젝트 하나 안에 `src` 백엔드와 `apps/web` 프론트가 같이 있는 monorepo라면 `start .`만 실행해도 역할별 작업 위치를 자동으로 나눈다.
+
+```bash
+cd /Users/james/projects/dev-town
+/Users/james/project/ai-squad/bin/squad start . --approval request
+```
+
+예를 들어 `src/...`와 `apps/web/...`가 감지되면 Backend Worker는 `src`에서, Frontend Worker는 `apps/web`에서 시작한다. Commander만 루트 프로젝트 전체를 보고, worker는 자기 담당 하위 프로젝트 밖 변경을 하지 않는다.
+
 백엔드와 프론트엔드가 서로 다른 프로젝트라면 workspace 파일을 만든 뒤 시작한다.
 
 ```json
@@ -298,6 +307,18 @@ node bin/squad.mjs dispatch --workspace /path/to/squad.json
 - `01-*.prompt.md`: 각 역할 에이전트에게 보낼 프롬프트
 - `commander.collect.prompt.md`: 역할별 답변을 취합할 Commander 프롬프트
 - `manifest.json`: 이번 분배의 모드와 역할 목록
+- `handoff/*.md`: 역할 간 계약 변경과 후속 요청을 공유하는 파일
+
+역할별 worker는 자기 담당 프로젝트와 allowed paths 밖을 직접 수정하지 않는다. 대신 다른 역할의 수정이 필요하면 `handoff/`에 요청을 남긴다.
+
+예:
+
+- `handoff/frontend-to-backend.md`: 프론트 변경 때문에 백엔드가 맞춰야 할 API/검증 요청
+- `handoff/backend-to-frontend.md`: 백엔드 응답/라우트 변경 때문에 프론트가 맞춰야 할 요청
+- `handoff/database-to-backend.md`: DB schema/migration 변경 때문에 백엔드가 반영해야 할 요청
+- `handoff/contract.md`: API request/response, shared type, env, generated client 같은 공통 계약 변경
+
+Commander는 worker 결과와 함께 `handoff/*.md`를 읽고, 후속 worker 분배가 필요하면 순차적으로 다시 작업을 보낸다.
 
 작업 유형을 직접 지정할 수도 있다.
 
