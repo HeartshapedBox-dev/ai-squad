@@ -162,6 +162,34 @@ squad new my-app --type next --approval request
 squad start /path/to/current-project --approval request
 ```
 
+백엔드와 프론트엔드가 서로 다른 프로젝트라면 workspace 파일을 만든 뒤 시작한다.
+
+```json
+{
+  "primary_project": "backend",
+  "projects": {
+    "backend": "/Users/james/projects/my-api",
+    "frontend": "/Users/james/projects/my-web"
+  },
+  "role_projects": {
+    "planner": "backend",
+    "backend": "backend",
+    "database": "backend",
+    "frontend": "frontend",
+    "infra": "backend",
+    "commander": "backend",
+    "reviewer": "backend",
+    "tester": "backend"
+  }
+}
+```
+
+```bash
+squad start --workspace /Users/james/projects/my-product/squad.json --approval request
+```
+
+이 구조에서는 Backend/Database Worker는 백엔드 프로젝트에서, Frontend Worker는 프론트엔드 프로젝트에서 시작한다. Commander는 workspace 전체를 알고 작업을 분배하지만, 각 worker는 자기 assigned project 밖 변경을 직접 하지 않고 cross-project request로 보고한다.
+
 최근 setup된 프로젝트에 바로 작업을 보내고 worker 결과까지 기다리려면:
 
 ```bash
@@ -191,10 +219,18 @@ node bin/squad.mjs setup --project /path/to/current-project --dry-run
 node bin/squad.mjs setup --project /path/to/current-project
 ```
 
+멀티 프로젝트 workspace는 다음처럼 setup한다.
+
+```bash
+cd ~/ai-squad
+node bin/squad.mjs setup --workspace /path/to/squad.json --dry-run
+node bin/squad.mjs setup --workspace /path/to/squad.json
+```
+
 이 명령은 cmux 현재 창에 다음 역할 탭을 만들고 각 탭에서 Codex를 역할별로 시작한다.
-각 Codex 세션은 현재 프로젝트, `~/ai-squad`, `~/projects`를 함께 참고하면서 시작한다.
-`--approval never`를 쓰면 생성되는 worker 시작 명령은 `codex --dangerously-bypass-approvals-and-sandbox --cd <project> --add-dir ~/ai-squad --add-dir ~/projects ...` 형식이다.
-`--approval request`를 쓰면 `codex --sandbox workspace-write --ask-for-approval on-request --cd <project> --add-dir ~/ai-squad --add-dir ~/projects ...` 형식으로 시작한다.
+단일 프로젝트 모드에서는 각 Codex 세션이 현재 프로젝트, `~/ai-squad`, `~/projects`를 함께 참고하면서 시작한다. workspace 모드에서는 worker가 자기 담당 프로젝트와 `~/ai-squad`만 열고, Commander만 workspace의 다른 프로젝트들을 함께 연다.
+`--approval never`를 쓰면 생성되는 시작 명령은 `codex --dangerously-bypass-approvals-and-sandbox --cd <project> --add-dir ~/ai-squad ...` 형식이다.
+`--approval request`를 쓰면 `codex --sandbox workspace-write --ask-for-approval on-request --cd <project> --add-dir ~/ai-squad ...` 형식으로 시작한다.
 
 기본 모델 정책은 Commander/Reviewer/설계 역할은 높게, 구현 worker는 가볍게 잡는다.
 
@@ -251,6 +287,7 @@ Reviewer, Planner, Tester 세션은 떠 있어도 매 작업마다 호출하지 
 ```bash
 cd ~/ai-squad
 node bin/squad.mjs dispatch --project /path/to/current-project
+node bin/squad.mjs dispatch --workspace /path/to/squad.json
 ```
 
 생성 결과는 `.squad-runs/<timestamp>/` 아래에 저장된다.
@@ -308,6 +345,7 @@ Commander 프롬프트까지 직접 보내야 하는 수동 실험에서는 `--i
 node bin/squad.mjs dispatch --project /path/to/current-project --send
 node bin/squad.mjs dispatch --project /path/to/current-project --send --submit
 node bin/squad.mjs dispatch --project /path/to/current-project --send --submit --wait
+node bin/squad.mjs dispatch --workspace /path/to/squad.json --send --submit --wait
 ```
 
 `--wait`은 worker가 `results/*.md` 파일을 쓸 때까지 기다린다. Commander 자동 흐름에서는 이 옵션을 기본으로 사용한다.

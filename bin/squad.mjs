@@ -89,6 +89,7 @@ function parseArgs(argv) {
     ai: 'codex',
     model: null,
     roleModels: null,
+    workspace: null,
     type: 'blank',
     name: null,
     dir: null,
@@ -126,6 +127,9 @@ function parseArgs(argv) {
       i += 1;
     } else if (arg === '--role-models' && next) {
       args.roleModels = parseRoleModels(next);
+      i += 1;
+    } else if (arg === '--workspace' && next) {
+      args.workspace = path.resolve(expandHome(next));
       i += 1;
     } else if (arg === '--type' && next) {
       args.type = next;
@@ -203,6 +207,99 @@ function expandHome(value) {
     return path.join(os.homedir(), value.slice(2));
   }
   return value;
+}
+
+async function resolveWorkspace(args) {
+  if (args.workspace) {
+    return loadWorkspaceFile(args.workspace);
+  }
+
+  const project = path.resolve(expandHome(args.project ?? process.cwd()));
+  return {
+    source: null,
+    primaryProject: project,
+    projects: { default: project },
+    roleProjects: Object.fromEntries(ROLE_ORDER.map((role) => [role, 'default'])),
+  };
+}
+
+async function loadWorkspaceFile(workspacePath) {
+  const source = path.resolve(expandHome(workspacePath));
+  const baseDir = path.dirname(source);
+  const raw = JSON.parse(await readFile(source, 'utf8'));
+  const rawProjects = raw.projects ?? {};
+  const projects = {};
+
+  for (const [name, projectPath] of Object.entries(rawProjects)) {
+    projects[name] = resolveWorkspacePath(projectPath, baseDir);
+  }
+
+  if (!Object.keys(projects).length) {
+    throw new Error(`Workspace file has no projects: ${source}`);
+  }
+
+  const primaryProjectKey = raw.primary_project
+    ?? raw.primaryProject
+    ?? raw.default_project
+    ?? raw.defaultProject
+    ?? Object.keys(projects)[0];
+
+  if (!projects[primaryProjectKey]) {
+    throw new Error(`Workspace primary project not found: ${primaryProjectKey}`);
+  }
+
+  const rawRoleProjects = raw.role_projects ?? raw.roleProjects ?? raw.roles ?? {};
+  const roleProjects = {};
+
+  for (const role of ROLE_ORDER) {
+    const roleConfig = rawRoleProjects[role];
+    const projectKey = typeof roleConfig === 'string'
+      ? roleConfig
+      : roleConfig?.project ?? primaryProjectKey;
+
+    if (!projects[projectKey]) {
+      throw new Error(`Workspace role "${role}" points to unknown project "${projectKey}"`);
+    }
+    roleProjects[role] = projectKey;
+  }
+
+  return {
+    source,
+    primaryProject: projects[primaryProjectKey],
+    primaryProjectKey,
+    projects,
+    roleProjects,
+  };
+}
+
+function resolveWorkspacePath(value, baseDir) {
+  const expanded = expandHome(String(value));
+  return path.resolve(path.isAbsolute(expanded) ? expanded : path.join(baseDir, expanded));
+}
+
+function projectForRole(workspace, role) {
+  const projectKey = workspace.roleProjects[role] ?? workspace.primaryProjectKey ?? 'default';
+  return workspace.projects[projectKey] ?? workspace.primaryProject;
+}
+
+function workspaceProjectDirs(workspace) {
+  return unique(Object.values(workspace.projects).map((projectPath) => path.resolve(projectPath)));
+}
+
+function workspaceForManifest(workspace) {
+  return {
+    source: workspace.source,
+    primaryProject: workspace.primaryProject,
+    primaryProjectKey: workspace.primaryProjectKey ?? 'default',
+    projects: workspace.projects,
+    roleProjects: workspace.roleProjects,
+  };
+}
+
+function workspaceDispatchFlag(workspace) {
+  return workspace.source
+    ? `--workspace ${shellQuote(workspace.source)}`
+    : `--project ${shellQuote(workspace.primaryProject)}`;
 }
 
 function hasAny(text, keywords) {
@@ -732,7 +829,7 @@ function topRoot(segments) {
   return segments[0] ?? '.';
 }
 
-function makeRoleScopeContract(role, boundaries) {
+function makeRoleScopeContract(role, boundaries, roleProject, workspace) {
   const exclusive = unique([
     ...boundaries.migration_roots,
     ...boundaries.data_roots,
@@ -747,12 +844,16 @@ function makeRoleScopeContract(role, boundaries) {
     'Worker Scope Contract:',
     '- 이 범위는 현재 프로젝트를 dispatch 시점에 스캔해 만든 동적 경계다. 경로가 비어 있거나 부정확해 보이면 먼저 프로젝트 구조를 확인하고 결과 파일에 보정안을 적어라.',
     '- allowed_paths 밖 파일은 수정하지 마라. 필요한 변경이 있으면 "cross-boundary request"로 파일과 이유만 보고해라.',
+    '- assigned_project 밖 다른 프로젝트는 수정하지 마라. 다른 프로젝트 변경이 필요하면 cross-project request로 보고해라.',
     '- exclusive_artifacts는 한 작업에서 단일 owner만 수정한다. Commander가 명시하지 않았으면 직접 수정하지 마라.',
     '- 결과 파일에는 changed_files, skipped_cross_boundary_changes, verification을 반드시 적어라.',
     '',
     `role: ${role}`,
+    `assigned_project: ${roleProject}`,
+    `workspace_projects:\n${formatList(workspaceProjectDirs(workspace))}`,
     `allowed_paths:\n${formatList(allowed)}`,
     `denied_paths:\n${formatList(denied)}`,
+    `denied_projects:\n${formatList(workspaceProjectDirs(workspace).filter((projectPath) => path.resolve(projectPath) !== path.resolve(roleProject)))}`,
     `exclusive_artifacts:\n${formatList(exclusive)}`,
     '',
     'Repo Boundary Map:',
@@ -1161,6 +1262,15 @@ async function newProject(args) {
 }
 
 async function startProject(args) {
+  if (args.workspace) {
+    const workspace = await resolveWorkspace(args);
+    for (const projectPath of workspaceProjectDirs(workspace)) {
+      await ensureProjectDirectory(projectPath);
+    }
+    await setup({ ...args, approval: normalizeApproval(args.approval) });
+    return;
+  }
+
   const target = args.positionals[0] ?? args.project;
   const project = path.resolve(expandHome(target));
   await ensureProjectDirectory(project);
@@ -1180,6 +1290,9 @@ async function ensureProjectDirectory(project) {
 async function currentProjectFromState() {
   try {
     const state = JSON.parse(await readFile(TERMINAL_MAP_FILE, 'utf8'));
+    if (state.workspace?.primaryProject) {
+      return path.resolve(state.workspace.primaryProject);
+    }
     if (state.project) {
       return path.resolve(state.project);
     }
@@ -1187,6 +1300,15 @@ async function currentProjectFromState() {
     // No saved setup yet.
   }
   return null;
+}
+
+async function currentWorkspaceSourceFromState() {
+  try {
+    const state = JSON.parse(await readFile(TERMINAL_MAP_FILE, 'utf8'));
+    return state.workspace?.source ?? null;
+  } catch {
+    return null;
+  }
 }
 
 async function askSquad(args) {
@@ -1198,9 +1320,11 @@ async function askSquad(args) {
   const project = args.project && args.project !== process.cwd()
     ? args.project
     : await currentProjectFromState() ?? process.cwd();
+  const workspace = args.workspace ?? await currentWorkspaceSourceFromState();
 
   await dispatch({
     ...args,
+    workspace,
     project,
     task,
     send: true,
@@ -1220,13 +1344,17 @@ async function status(args) {
     .sort();
 
   console.log(`Run: ${runDir}`);
-  console.log(`Project: ${manifest.project}`);
+  console.log(`Project: ${manifest.project ?? manifest.workspace?.primaryProject}`);
+  if (manifest.workspace?.source) {
+    console.log(`Workspace: ${manifest.workspace.source}`);
+  }
   console.log(`Mode: ${manifest.mode}`);
   console.log(`Roles: ${manifest.roles.join(', ')}`);
   console.log(`Results: ${results.length ? results.join(', ') : '(none yet)'}`);
 }
 
 async function dispatch(args) {
+  const workspace = await resolveWorkspace(args);
   const currentTask = await readText('ai/current-task.md');
   const inferenceText = args.task?.trim() ? args.task : stripTemplateExamples(currentTask);
   const mode = inferMode(inferenceText, args.mode);
@@ -1234,7 +1362,11 @@ async function dispatch(args) {
   const runId = makeRunId();
   const runDir = path.join(RUNS_DIR, runId);
   const resultsDir = path.join(runDir, 'results');
-  const boundaries = await discoverProjectBoundaries(args.project);
+  const boundariesByProject = {};
+
+  for (const projectPath of workspaceProjectDirs(workspace)) {
+    boundariesByProject[projectPath] = await discoverProjectBoundaries(projectPath);
+  }
 
   await mkdir(runDir, { recursive: true });
   await mkdir(resultsDir, { recursive: true });
@@ -1247,13 +1379,15 @@ async function dispatch(args) {
 
   for (const [index, role] of roles.entries()) {
     const filename = `${String(index + 1).padStart(2, '0')}-${role}.prompt.md`;
+    const roleProject = projectForRole(workspace, role);
+    const boundaries = boundariesByProject[roleProject] ?? await discoverProjectBoundaries(roleProject);
     await writeFile(
       path.join(runDir, filename),
       rolePrompt(
         role,
         mode,
-        args.project,
-        makeRoleScopeContract(role, boundaries),
+        roleProject,
+        makeRoleScopeContract(role, boundaries, roleProject, workspace),
         path.join(resultsDir, `${role}.md`),
         inferenceText,
         runId,
@@ -1276,10 +1410,12 @@ async function dispatch(args) {
       {
         runId,
         mode,
-        project: args.project,
+        project: workspace.primaryProject,
+        workspace: workspaceForManifest(workspace),
         inferenceText,
         roles,
-        boundaries,
+        boundariesByProject,
+        roleProjects: Object.fromEntries(roles.map((role) => [role, projectForRole(workspace, role)])),
         files: roles.map((role, index) => `${String(index + 1).padStart(2, '0')}-${role}.prompt.md`),
       },
       null,
@@ -1289,6 +1425,9 @@ async function dispatch(args) {
   );
 
   console.log(`AI Squad dispatch created: ${runDir}`);
+  if (workspace.source) {
+    console.log(`Workspace: ${workspace.source}`);
+  }
   console.log(`Mode: ${mode}`);
   console.log(`Roles: ${roles.join(', ')}`);
   console.log('');
@@ -1306,7 +1445,8 @@ async function dispatch(args) {
 }
 
 async function setup(args) {
-  const project = args.project;
+  const workspace = await resolveWorkspace(args);
+  const project = workspace.primaryProject;
   const roleTabs = [
     ['planner', 'planner 플레너 노동자'],
     ['backend', 'backend 백엔드 노동자'],
@@ -1322,15 +1462,29 @@ async function setup(args) {
   await mkdir(runDir, { recursive: true });
 
   for (const [role, title] of roleTabs) {
+    const roleProject = projectForRole(workspace, role);
     const prompt = role === 'commander'
-      ? commanderBootPrompt(project, args.kickoffTask)
-      : workerBootPrompt(role, project);
+      ? commanderBootPrompt(workspace, args.kickoffTask)
+      : workerBootPrompt(role, roleProject);
     const promptFile = path.join(runDir, `${role}.boot.md`);
     const commandFile = path.join(runDir, `${role}.command.sh`);
     const model = modelForRole(role, args);
 
     await writeFile(promptFile, prompt, 'utf8');
-    await writeFile(commandFile, makeStartCommand(project, title, args.ai, promptFile, args.approval, model), 'utf8');
+    await writeFile(
+      commandFile,
+      makeStartCommand(
+        roleProject,
+        title,
+        args.ai,
+        promptFile,
+        args.approval,
+        model,
+        role === 'commander' ? workspaceProjectDirs(workspace) : [],
+        !workspace.source || role === 'commander',
+      ),
+      'utf8',
+    );
   }
 
   if (args.dryRun) {
@@ -1361,6 +1515,7 @@ async function setup(args) {
     `${JSON.stringify(
       {
         project,
+        workspace: workspaceForManifest(workspace),
         createdAt: new Date().toISOString(),
         terminals: setupMap.terminals,
         workspaces: setupMap.workspaces,
@@ -1453,19 +1608,25 @@ function modelForRole(role, args) {
   return args.roleModels?.[role] ?? args.model ?? DEFAULT_ROLE_MODELS[role] ?? null;
 }
 
-function makeStartCommand(project, title, ai, promptFile, approval = 'never', model = null) {
+function makeStartCommand(project, title, ai, promptFile, approval = 'never', model = null, extraDirs = [], includeProjectsDir = true) {
   const projectPath = shellQuote(project);
   const squadPath = shellQuote(ROOT);
-  const projectsPath = shellQuote(path.join(os.homedir(), 'projects'));
+  const projectsFlag = includeProjectsDir
+    ? ` --add-dir ${shellQuote(path.join(os.homedir(), 'projects'))}`
+    : '';
+  const extraDirFlags = unique(extraDirs.map((dir) => path.resolve(dir)))
+    .filter((dir) => path.resolve(dir) !== path.resolve(project))
+    .map((dir) => ` --add-dir ${shellQuote(dir)}`)
+    .join('');
   const titleText = title.replaceAll('\\', '\\\\').replaceAll("'", "'\\''");
   const approvalMode = normalizeApproval(approval);
   const codexFlags = approvalMode === 'request'
     ? `--sandbox workspace-write --ask-for-approval on-request`
     : `--dangerously-bypass-approvals-and-sandbox`;
   const modelFlag = model ? ` --model ${shellQuote(model)}` : '';
-  return `cd ${projectPath}
+return `cd ${projectPath}
 printf '\\033]0;${titleText}\\007'
-${shellQuote(ai)} ${codexFlags}${modelFlag} --cd ${projectPath} --add-dir ${squadPath} --add-dir ${projectsPath} "$(cat ${shellQuote(promptFile)})"
+${shellQuote(ai)} ${codexFlags}${modelFlag} --cd ${projectPath} --add-dir ${squadPath}${projectsFlag}${extraDirFlags} "$(cat ${shellQuote(promptFile)})"
 `;
 }
 
@@ -1498,7 +1659,15 @@ ${contextFiles}
 Commander가 실제 작업 프롬프트를 보내면 그때 필요한 규칙 파일과 프로젝트 파일을 읽고 바로 처리해라.`;
 }
 
-function commanderBootPrompt(project, kickoffTask = null) {
+function commanderBootPrompt(workspace, kickoffTask = null) {
+  const project = workspace.primaryProject;
+  const dispatchTarget = workspaceDispatchFlag(workspace);
+  const workspaceLines = Object.entries(workspace.projects)
+    .map(([name, projectPath]) => `- ${name}: ${projectPath}`)
+    .join('\n');
+  const roleProjectLines = ROLE_ORDER
+    .map((role) => `- ${role}: ${projectForRole(workspace, role)}`)
+    .join('\n');
   const kickoffBlock = kickoffTask
     ? `
 시작 작업:
@@ -1508,7 +1677,7 @@ function commanderBootPrompt(project, kickoffTask = null) {
 \`\`\`bash
 sleep 10
 cd ${shellQuote(ROOT)}
-node bin/squad.mjs dispatch --project ${shellQuote(project)} --task ${shellQuote(kickoffTask)} --send --submit --wait
+node bin/squad.mjs dispatch ${dispatchTarget} --task ${shellQuote(kickoffTask)} --send --submit --wait
 \`\`\`
 
 시작 작업 내용:
@@ -1525,7 +1694,7 @@ ${kickoffTask}
 자동 분배 명령:
 \`\`\`bash
 cd ${shellQuote(ROOT)}
-node bin/squad.mjs dispatch --project ${shellQuote(project)} --task "사용자가 준 작업 내용" --send --submit --wait
+node bin/squad.mjs dispatch ${dispatchTarget} --task "사용자가 준 작업 내용" --send --submit --wait
 \`\`\`
 ${kickoffBlock}
 
@@ -1545,6 +1714,12 @@ ${kickoffBlock}
 
 프로젝트:
 - ${project}
+
+Workspace projects:
+${workspaceLines}
+
+Role project assignment:
+${roleProjectLines}
 
 참고 문서:
 - ${path.join(ROOT, 'global-rules.md')}
@@ -1599,7 +1774,7 @@ async function resolveRunDir(run) {
 async function send(args) {
   const runDir = await resolveRunDir(args.run);
   const manifest = JSON.parse(await readFile(path.join(runDir, 'manifest.json'), 'utf8'));
-  const squadState = await loadSquadState(manifest.project);
+  const squadState = await loadSquadState(manifest.project, manifest.workspace);
   const missingRoles = [];
   const matchedRoles = [];
   let sentCount = 0;
@@ -1654,9 +1829,12 @@ function runCmux(args, description) {
   }
 }
 
-async function loadSquadState(project) {
+async function loadSquadState(project, workspace = null) {
   try {
     const state = JSON.parse(await readFile(TERMINAL_MAP_FILE, 'utf8'));
+    if (workspace?.source && state.workspace?.source && path.resolve(state.workspace.source) !== path.resolve(workspace.source)) {
+      return {};
+    }
     if (state.project && path.resolve(state.project) !== path.resolve(project)) {
       return {};
     }
@@ -1719,13 +1897,13 @@ function help() {
 
 Usage:
   squad new <name-or-path> [--type blank|next|nest|expo] [--approval request|never] [--model MODEL] [--role-models role=model,...] [--task "첫 작업"] [--dry-run]
-  squad start [/path/to/project] [--approval request|never] [--model MODEL] [--role-models role=model,...] [--dry-run]
-  squad ask "작업 내용" [--project /path/to/project]
+  squad start [/path/to/project] [--workspace /path/to/squad.json] [--approval request|never] [--model MODEL] [--role-models role=model,...] [--dry-run]
+  squad ask "작업 내용" [--project /path/to/project] [--workspace /path/to/squad.json]
   squad status [--run latest|/path/to/run]
 
 Lower-level commands:
-  node bin/squad.mjs setup [--project /path/to/project] [--ai codex] [--model MODEL] [--role-models role=model,...] [--dry-run]
-  node bin/squad.mjs dispatch [--mode auto|feature|bugfix|release] [--project /path/to/project] [--roles planner,backend,database,frontend,infra,commander,reviewer,tester] [--task "extra instruction"] [--send] [--submit] [--wait]
+  node bin/squad.mjs setup [--project /path/to/project] [--workspace /path/to/squad.json] [--ai codex] [--model MODEL] [--role-models role=model,...] [--dry-run]
+  node bin/squad.mjs dispatch [--mode auto|feature|bugfix|release] [--project /path/to/project] [--workspace /path/to/squad.json] [--roles planner,backend,database,frontend,infra,commander,reviewer,tester] [--task "extra instruction"] [--send] [--submit] [--wait]
   node bin/squad.mjs send [--run latest|/path/to/run] [--dry-run] [--submit] [--include-commander]
 
 Examples:
@@ -1734,6 +1912,7 @@ Examples:
   squad new my-app --type next --model gpt-5.4-mini --role-models commander=gpt-5.5
   squad new mobile-app --type expo --task "Expo 앱 초기 구조 만들고 로그인 화면부터 시작" --approval never
   squad start /Users/james/daldale-api-backend --approval request
+  squad start --workspace /Users/james/projects/my-product/squad.json --approval request
   squad ask "로그인 API 500 오류 수정"
   squad status
 `);
