@@ -1079,7 +1079,12 @@ function unique(items) {
 function rolePrompt(role, mode, projectPath, contextBlock = '', resultFile = null, taskText = '', runId = '') {
   const implement = shouldImplement(taskText);
   const resultInstruction = resultFile
-    ? `결과 저장: ${resultFile}\n결과 파일 첫 줄: 작업 ID: ${runId}`
+    ? [
+        `결과 저장: ${resultFile}`,
+        `결과 파일 첫 줄: 작업 ID: ${runId}`,
+        '- 이 results 파일이 유일한 작업 완료 신호다. 반드시 생성하거나 갱신해라.',
+        '- handoff/*.md는 다른 역할에게 넘길 요청/계약 변경이 있을 때만 보조로 작성하고, 최종 요약은 반드시 results 파일에도 남겨라.',
+      ].join('\n')
     : '결과 파일 저장 없음';
   const boundaryInstruction = contextBlock
     ? `\n\n${contextBlock}`
@@ -1827,7 +1832,8 @@ function workerBootPrompt(role, project) {
 - 실제 작업 프롬프트에 Worker Scope Contract가 있으면 그 allowed_paths만 수정한다. 범위 밖 변경이 필요하면 직접 고치지 말고 cross-boundary request로 보고한다.
 - 실제 작업 프롬프트에 Handoff Contract가 있으면 read_files를 먼저 확인하고, 다른 역할/프로젝트 변경 요청은 write_files에 기록한다.
 ${roleLine}
-- 결과 저장 지시가 있으면 반드시 해당 results/*.md 파일을 생성하거나 갱신한다.
+- 결과 저장 지시가 있으면 반드시 해당 results/*.md 파일을 생성하거나 갱신한다. 이 파일만 작업 완료 신호로 인정된다.
+- handoff/*.md는 보조 전달 파일이다. handoff만 작성하고 results/*.md를 생략하지 않는다.
 - 답변은 한국어로 간단명료하게 한다.
 
 프로젝트 문맥 파일:
@@ -2027,6 +2033,7 @@ async function loadSquadState(project, workspace = null) {
 async function waitForResults(runDir, roles, timeoutSeconds = 900) {
   const resultRoles = roles.filter((role) => role !== 'commander');
   const runId = path.basename(runDir);
+  const warnedHandoffOnly = new Set();
 
   if (!resultRoles.length) {
     console.log('No worker results to wait for.');
@@ -2048,12 +2055,25 @@ async function waitForResults(runDir, roles, timeoutSeconds = 900) {
       const info = await stat(resultPath).catch(() => null);
       if (!info || info.size === 0) {
         pending.push(role);
+        const updatedHandoffFiles = await updatedHandoffFilesForRole(runDir, role);
+        const warningKey = `${role}:missing:${updatedHandoffFiles.join(',')}`;
+        if (updatedHandoffFiles.length && !warnedHandoffOnly.has(warningKey)) {
+          warnedHandoffOnly.add(warningKey);
+          console.warn(
+            `Worker ${role} is still missing results; writable handoff files changed (${updatedHandoffFiles.join(', ')}). Waiting for ${resultPath}`,
+          );
+        }
         continue;
       }
 
       const resultText = await readFile(resultPath, 'utf8').catch(() => '');
       if (!resultText.includes(`작업 ID: ${runId}`)) {
         pending.push(role);
+        const warningKey = `${role}:run-id`;
+        if (!warnedHandoffOnly.has(warningKey)) {
+          warnedHandoffOnly.add(warningKey);
+          console.warn(`Worker ${role} result is missing 작업 ID: ${runId}; waiting for ${resultPath}`);
+        }
       }
     }
 
@@ -2066,6 +2086,32 @@ async function waitForResults(runDir, roles, timeoutSeconds = 900) {
   }
 
   throw new Error(`Timed out waiting for worker results in ${runDir}`);
+}
+
+async function updatedHandoffFilesForRole(runDir, role) {
+  const handoffDir = path.join(runDir, 'handoff');
+  const files = handoffFilesForRole(role, handoffDir);
+  const updated = [];
+
+  for (const file of files) {
+    const text = await readFile(file, 'utf8').catch(() => '');
+    if (isUpdatedHandoffText(text)) {
+      updated.push(path.relative(runDir, file));
+    }
+  }
+
+  return updated;
+}
+
+function isUpdatedHandoffText(text) {
+  if (!text.trim()) {
+    return false;
+  }
+
+  return !(
+    text.includes('작업 중 다른 역할에게 넘길 계약/요청이 있으면 이 파일에 추가한다.')
+    && text.includes('- 없음')
+  );
 }
 
 function appleString(value) {

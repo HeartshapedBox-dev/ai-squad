@@ -307,9 +307,10 @@ node bin/squad.mjs dispatch --workspace /path/to/squad.json
 - `01-*.prompt.md`: 각 역할 에이전트에게 보낼 프롬프트
 - `commander.collect.prompt.md`: 역할별 답변을 취합할 Commander 프롬프트
 - `manifest.json`: 이번 분배의 모드와 역할 목록
+- `results/*.md`: worker별 최종 결과 파일. 이 파일이 작업 완료 신호다.
 - `handoff/*.md`: 역할 간 계약 변경과 후속 요청을 공유하는 파일
 
-역할별 worker는 자기 담당 프로젝트와 allowed paths 밖을 직접 수정하지 않는다. 대신 다른 역할의 수정이 필요하면 `handoff/`에 요청을 남긴다.
+역할별 worker는 자기 담당 프로젝트와 allowed paths 밖을 직접 수정하지 않는다. 대신 다른 역할의 수정이 필요하면 `handoff/`에 요청을 남긴다. `handoff/*.md`는 보조 전달 파일이며 완료 신호가 아니다. 검증 메모나 계약 정리를 `handoff/`에 남겼더라도 최종 요약은 반드시 `results/<role>.md`에도 남겨야 한다.
 
 예:
 
@@ -369,7 +370,7 @@ node bin/squad.mjs dispatch --project /path/to/current-project --send --submit -
 node bin/squad.mjs dispatch --workspace /path/to/squad.json --send --submit --wait
 ```
 
-`--wait`은 worker가 `results/*.md` 파일을 쓸 때까지 기다린다. Commander 자동 흐름에서는 이 옵션을 기본으로 사용한다.
+`--wait`은 worker가 `results/*.md` 파일을 쓸 때까지 기다린다. Commander 자동 흐름에서는 이 옵션을 기본으로 사용한다. worker가 `handoff/*.md`만 갱신하고 `results/<role>.md`를 만들지 않으면 완료로 인정하지 않으며, 대기 중 경고를 출력한다.
 
 주의: `--submit`은 해당 cmux 탭이 이미 Codex/Claude 같은 AI 입력 대기 상태일 때만 사용한다. 일반 shell 상태에서 실행하면 긴 프롬프트가 shell에 입력될 수 있다.
 
