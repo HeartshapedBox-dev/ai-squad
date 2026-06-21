@@ -2068,11 +2068,10 @@ async function waitForResults(runDir, roles, timeoutSeconds = 900) {
 
       const resultText = await readFile(resultPath, 'utf8').catch(() => '');
       if (!resultText.includes(`작업 ID: ${runId}`)) {
-        pending.push(role);
         const warningKey = `${role}:run-id`;
         if (!warnedHandoffOnly.has(warningKey)) {
           warnedHandoffOnly.add(warningKey);
-          console.warn(`Worker ${role} result is missing 작업 ID: ${runId}; waiting for ${resultPath}`);
+          console.warn(`Worker ${role} result is missing 작업 ID: ${runId}; accepting non-empty result at ${resultPath}`);
         }
       }
     }

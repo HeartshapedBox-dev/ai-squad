@@ -370,7 +370,7 @@ node bin/squad.mjs dispatch --project /path/to/current-project --send --submit -
 node bin/squad.mjs dispatch --workspace /path/to/squad.json --send --submit --wait
 ```
 
-`--wait`은 worker가 `results/*.md` 파일을 쓸 때까지 기다린다. Commander 자동 흐름에서는 이 옵션을 기본으로 사용한다. worker가 `handoff/*.md`만 갱신하고 `results/<role>.md`를 만들지 않으면 완료로 인정하지 않으며, 대기 중 경고를 출력한다.
+`--wait`은 worker가 비어 있지 않은 `results/*.md` 파일을 쓸 때까지 기다린다. Commander 자동 흐름에서는 이 옵션을 기본으로 사용한다. worker가 `handoff/*.md`만 갱신하고 `results/<role>.md`를 만들지 않으면 완료로 인정하지 않으며, 대기 중 경고를 출력한다. 결과 파일에 작업 ID가 빠져 있으면 경고를 출력하지만, run별 결과 경로가 고유하므로 비어 있지 않은 결과는 완료로 인정한다.
 
 주의: `--submit`은 해당 cmux 탭이 이미 Codex/Claude 같은 AI 입력 대기 상태일 때만 사용한다. 일반 shell 상태에서 실행하면 긴 프롬프트가 shell에 입력될 수 있다.
 
