@@ -906,9 +906,9 @@ function makeRoleScopeContract(role, boundaries, roleProject, workspace) {
   return [
     'Worker Scope Contract:',
     '- 이 범위는 현재 프로젝트를 dispatch 시점에 스캔해 만든 동적 경계다. 경로가 비어 있거나 부정확해 보이면 먼저 프로젝트 구조를 확인하고 결과 파일에 보정안을 적어라.',
-    '- allowed_paths 밖 파일은 수정하지 마라. 필요한 변경이 있으면 "cross-boundary request"로 파일과 이유만 보고해라.',
-    '- assigned_project 밖 다른 프로젝트는 수정하지 마라. 다른 프로젝트 변경이 필요하면 cross-project request로 보고해라.',
-    '- exclusive_artifacts는 한 작업에서 단일 owner만 수정한다. Commander가 명시하지 않았으면 직접 수정하지 마라.',
+    '- allowed_paths 밖 파일은 수정하지 마라. 단, Commander가 현재 작업 프롬프트에 "Commander 승인 추가 허용 경로"로 정확한 경로와 이유를 명시한 항목은 이번 작업의 allowed_paths로 취급하고 수정할 수 있다.',
+    '- assigned_project 밖 다른 프로젝트는 수정하지 마라. 단, Commander가 현재 작업 프롬프트에 "Commander 승인 추가 허용 프로젝트"로 정확한 프로젝트 경로와 이유를 명시한 항목은 이번 작업에서 수정할 수 있다.',
+    '- exclusive_artifacts는 한 작업에서 단일 owner만 수정한다. Commander가 현재 작업 프롬프트에 owner와 정확한 경로를 명시해 승인했으면 그 owner만 수정할 수 있다.',
     '- 결과 파일에는 changed_files, skipped_cross_boundary_changes, verification을 반드시 적어라.',
     '',
     `role: ${role}`,
@@ -931,6 +931,7 @@ function makeHandoffContract(role, handoffDir) {
   return [
     'Handoff Contract:',
     '- 다른 역할이나 다른 프로젝트의 수정이 필요하면 상대 프로젝트를 직접 수정하지 말고 handoff 파일에 기록해라.',
+    '- Commander가 handoff를 읽고 필요하다고 판단해 후속 작업 프롬프트에 정확한 경로/프로젝트/owner를 승인하면, 수신 worker는 해당 항목을 자동 승인된 작업 범위로 취급한다.',
     '- API request/response, route, validation, shared type, env, generated client 변경은 contract.md에 기록해라.',
     '- handoff에는 changed_files, requested_changes, contract_changes, verification_notes를 짧고 구체적으로 적어라.',
     '- 구현 전에 read_files에 내용이 있으면 먼저 읽고, 그 계약에 맞춰 자기 assigned_project 안에서만 수정해라.',
@@ -1128,7 +1129,7 @@ function rolePrompt(role, mode, projectPath, contextBlock = '', resultFile = nul
   ].join('\n') + boundaryInstruction;
 
   if (role === 'commander') {
-    return `${base}\n\nCommander 역할: worker 결과를 취합해서 최종 구현 프롬프트와 검증 체크리스트를 만들어라. 직접 코드 수정은 하지 마라. worker별 changed_files가 허용 범위를 벗어났거나 exclusive artifact를 여러 worker가 수정했으면 merge하지 말고 재분배해라.`;
+    return `${base}\n\nCommander 역할: worker 결과를 취합해서 최종 구현 프롬프트와 검증 체크리스트를 만들어라. 직접 코드 수정은 하지 마라. worker별 changed_files가 허용 범위를 벗어났더라도 필요하다고 판단하면 후속 분배 프롬프트에 "Commander 승인 추가 허용 경로"와 owner를 명시해 자동 승인한다. exclusive artifact를 여러 worker가 수정했으면 merge하지 말고 단일 owner로 재분배해라.`;
   }
 
   if (role === 'reviewer') {
@@ -1140,11 +1141,11 @@ function rolePrompt(role, mode, projectPath, contextBlock = '', resultFile = nul
   }
 
   if (role === 'backend' && implement) {
-    return `${base}\n\nBackend 역할: 실제 구현 담당이다. 기존 구조를 확인하고 최소 변경으로 구현해라. 단, 아래 Worker Scope Contract의 allowed_paths 밖 파일은 수정하지 말고 필요한 변경을 보고만 해라. DB schema/migration/API contract/generated/lockfile 변경은 Commander가 별도 승인하지 않았으면 직접 만들지 마라. 검증 명령과 변경 파일을 결과에 명시해라.`;
+    return `${base}\n\nBackend 역할: 실제 구현 담당이다. 기존 구조를 확인하고 최소 변경으로 구현해라. 단, 아래 Worker Scope Contract의 allowed_paths와 Commander가 명시한 추가 허용 경로 밖 파일은 수정하지 말고 필요한 변경을 보고만 해라. DB schema/migration/API contract/generated/lockfile 변경은 Commander가 별도 승인하지 않았으면 직접 만들지 마라. 검증 명령과 변경 파일을 결과에 명시해라.`;
   }
 
   if (role === 'frontend' && implement) {
-    return `${base}\n\nFrontend 역할: 실제 구현 담당이다. 기존 UI 구조와 스타일을 확인하고 최소 변경으로 구현해라. 단, 아래 Worker Scope Contract의 allowed_paths 밖 파일은 수정하지 말고 필요한 변경을 보고만 해라. API/server/DB schema/migration/API contract/generated/lockfile 변경은 Commander가 별도 승인하지 않았으면 직접 만들지 마라. 컴포넌트, 페이지, 스타일, 상태 처리 변경과 검증 명령을 결과에 명시해라.`;
+    return `${base}\n\nFrontend 역할: 실제 구현 담당이다. 기존 UI 구조와 스타일을 확인하고 최소 변경으로 구현해라. 단, 아래 Worker Scope Contract의 allowed_paths와 Commander가 명시한 추가 허용 경로 밖 파일은 수정하지 말고 필요한 변경을 보고만 해라. API/server/DB schema/migration/API contract/generated/lockfile 변경은 Commander가 별도 승인하지 않았으면 직접 만들지 마라. 컴포넌트, 페이지, 스타일, 상태 처리 변경과 검증 명령을 결과에 명시해라.`;
   }
 
   if (role === 'database' && implement) {
@@ -1152,7 +1153,7 @@ function rolePrompt(role, mode, projectPath, contextBlock = '', resultFile = nul
   }
 
   if (['backend', 'frontend'].includes(role)) {
-    return `${base}\n\n${ROLE_LABELS[role]} 역할: 네 관점의 영향 범위, 수정 파일 후보, 설계 판단, 구현 순서, 위험 요소를 정리해라. 구현 지시가 명확하면 실제 코드 수정까지 진행할 수 있지만, 아래 Worker Scope Contract의 allowed_paths 밖 파일은 수정하지 마라.`;
+    return `${base}\n\n${ROLE_LABELS[role]} 역할: 네 관점의 영향 범위, 수정 파일 후보, 설계 판단, 구현 순서, 위험 요소를 정리해라. 구현 지시가 명확하면 실제 코드 수정까지 진행할 수 있지만, 아래 Worker Scope Contract의 allowed_paths와 Commander가 명시한 추가 허용 경로 밖 파일은 수정하지 마라.`;
   }
 
   return `${base}\n\n${ROLE_LABELS[role]} 역할: 네 관점의 영향 범위, 수정 파일 후보, 설계 판단, 구현 순서, 위험 요소를 정리해라. 직접 코드는 수정하지 마라.`;
@@ -1202,7 +1203,7 @@ function makeCmuxGuide(runDir, roles) {
 
 function makeCommanderCollectPrompt(runDir, roles, handoffDir) {
   const roleList = roles.filter((role) => role !== 'commander');
-  return `${path.join(ROOT, 'global-rules.md')}와 ${path.join(ROOT, 'agents/commander.md')}를 기준으로 답변해줘.\n\n아래 역할 에이전트들의 결과를 내가 이어서 붙여넣을 거야.\n전부 받은 뒤 Codex에게 넘길 최종 구현 프롬프트를 만들어줘.\n\n대상 역할:\n${roleList.map((role) => `- ${ROLE_LABELS[role]}`).join('\n')}\n\n생성된 프롬프트 위치:\n- ${runDir}\n\nHandoff 위치:\n- ${handoffDir}\n\n출력 형식:\n- 목표\n- 작업 범위\n- 역할별 결론 요약\n- Handoff 요약\n- Contract 변경\n- 수정 파일 후보\n- 구현 순서\n- Ownership plan\n- Exclusive artifact owner\n- 위험 요소\n- Codex 실행 프롬프트\n- 검증 체크리스트\n\n취합 규칙:\n- manifest.json과 각 worker prompt의 Worker Scope Contract를 확인해라.\n- ${handoffDir} 아래의 handoff 파일을 반드시 읽고, 상대 역할에 넘겨야 할 요청이 있으면 후속 분배 지시를 작성해라.\n- worker 결과의 changed_files가 allowed_paths 안에 있는지 확인해라.\n- allowed_paths 밖 수정, migration/schema/API contract/generated/lockfile 중복 수정, 같은 심볼 중복 구현이 있으면 merge 금지와 재분배 지시를 넣어라.\n- DB schema/migration, API contract, generated file, lockfile은 단일 owner만 수정하게 해라.\n- contract.md에 API/타입/환경변수 변경이 있으면 backend/frontend/database/tester 중 필요한 다음 역할을 순차로 다시 호출해라.\n`;
+  return `${path.join(ROOT, 'global-rules.md')}와 ${path.join(ROOT, 'agents/commander.md')}를 기준으로 답변해줘.\n\n아래 역할 에이전트들의 결과를 내가 이어서 붙여넣을 거야.\n전부 받은 뒤 Codex에게 넘길 최종 구현 프롬프트를 만들어줘.\n\n대상 역할:\n${roleList.map((role) => `- ${ROLE_LABELS[role]}`).join('\n')}\n\n생성된 프롬프트 위치:\n- ${runDir}\n\nHandoff 위치:\n- ${handoffDir}\n\n출력 형식:\n- 목표\n- 작업 범위\n- 역할별 결론 요약\n- Handoff 요약\n- Contract 변경\n- 수정 파일 후보\n- 구현 순서\n- Ownership plan\n- Exclusive artifact owner\n- Commander 승인 추가 허용 경로\n- 위험 요소\n- Codex 실행 프롬프트\n- 검증 체크리스트\n\n취합 규칙:\n- manifest.json과 각 worker prompt의 Worker Scope Contract를 확인해라.\n- ${handoffDir} 아래의 handoff 파일을 반드시 읽고, 상대 역할에 넘겨야 할 요청이 있으면 후속 분배 지시를 작성해라.\n- worker 결과의 changed_files가 allowed_paths 안에 있는지 확인해라.\n- allowed_paths 밖 수정이 작업 완성에 필요하다고 판단하면 merge 금지로 끝내지 말고, 후속 worker 프롬프트에 "Commander 승인 추가 허용 경로"와 이유, owner를 정확히 적어 자동 승인해라.\n- migration/schema/API contract/generated/lockfile 중복 수정, 같은 심볼 중복 구현이 있으면 merge 금지와 단일 owner 재분배 지시를 넣어라.\n- DB schema/migration, API contract, generated file, lockfile은 단일 owner만 수정하게 해라.\n- contract.md에 API/타입/환경변수 변경이 있으면 backend/frontend/database/tester 중 필요한 다음 역할을 순차로 다시 호출해라.\n`;
 }
 
 function projectTargetFromArgs(args) {
@@ -1847,7 +1848,7 @@ function shellQuote(value) {
 }
 
 function workerBootPrompt(role, project) {
-  const roleLine = ['backend', 'frontend'].includes(role)
+  const roleLine = ['backend', 'database', 'frontend'].includes(role)
     ? `- ${ROLE_LABELS[role]} Worker는 구현 지시를 받으면 실제 파일을 수정하는 구현 담당이다.`
     : '- 구현 담당이 아니라면 코드 수정 없이 네 역할 관점의 분석/검토를 한다.';
   const contextFiles = CONTEXT_FILES.map((file) => `- ${path.join(ROOT, file)}`).join('\n');
@@ -1858,7 +1859,8 @@ function workerBootPrompt(role, project) {
 - ${path.join(ROOT, 'agents', `${role}.md`)} 역할을 따른다.
 - 코드 프로젝트는 ${project} 이다.
 - Commander가 보낸 작업을 받으면 바로 분석한다.
-- 실제 작업 프롬프트에 Worker Scope Contract가 있으면 그 allowed_paths만 수정한다. 범위 밖 변경이 필요하면 직접 고치지 말고 cross-boundary request로 보고한다.
+- 실제 작업 프롬프트에 Worker Scope Contract가 있으면 그 allowed_paths와 Commander가 현재 프롬프트에 명시한 추가 허용 경로만 수정한다. 범위 밖 변경이 필요하면 직접 고치지 말고 cross-boundary request로 보고한다.
+- Commander가 "Commander 승인 추가 허용 경로"나 "Commander 승인 추가 허용 프로젝트"를 정확한 경로와 이유로 명시하면 이번 작업에서는 자동 승인된 범위로 취급한다.
 - 실제 작업 프롬프트에 Handoff Contract가 있으면 read_files를 먼저 확인하고, 다른 역할/프로젝트 변경 요청은 write_files에 기록한다.
 ${roleLine}
 - 결과 저장 지시가 있으면 반드시 해당 results/*.md 파일을 생성하거나 갱신한다. 이 파일만 작업 완료 신호로 인정된다.
@@ -1915,17 +1917,19 @@ ${kickoffBlock}
 운영 규칙:
 1. 사용자가 새 작업을 말하면 작업을 한 문장으로 요약한다.
 2. 위 자동 분배 명령을 실행해서 worker들에게 작업을 보낸다. dispatch는 프로젝트 구조를 스캔해 worker별 Worker Scope Contract를 프롬프트에 포함한다.
-3. 구현/수정/추가/개발 작업이면 Backend/Frontend Worker가 실제 구현 담당이다. 화면/UI 작업은 Frontend가 구현하고, 서버/API 작업은 Backend가 구현한다. Reviewer/Planner는 사용자가 요청했거나 작업상 꼭 필요할 때만 호출한다.
-4. DB schema/migration, API contract, generated file, lockfile, 빌드/배포 설정은 exclusive artifact로 보고 단일 owner에게만 맡긴다.
+3. 구현/수정/추가/개발 작업이면 Backend/Database/Frontend Worker가 실제 구현 담당이다. 화면/UI 작업은 Frontend가 구현하고, 서버/API 작업은 Backend가 구현하고, DB schema/migration/seed/DB provider/env example/DB 의존성 변경은 Database가 구현한다. Reviewer/Planner는 사용자가 요청했거나 작업상 꼭 필요할 때만 호출한다.
+4. DB schema/migration, API contract, generated file, lockfile, 빌드/배포 설정은 exclusive artifact로 보고 단일 owner에게만 맡긴다. DB 관련 exclusive artifact의 기본 owner는 Database Worker다.
 5. API contract나 DB 변경이 필요하면 병렬 구현보다 DB/contract owner → backend → frontend → tester 순서로 진행한다.
 6. 자동 분배 명령은 worker 결과 파일이 생길 때까지 기다린다.
 7. 명령이 완료되면 출력된 .squad-runs 경로 아래 manifest.json과 results/*.md 파일을 읽어 worker 결과를 취합한다.
-8. .squad-runs 경로 아래 handoff/*.md를 반드시 읽는다. handoff에 상대 역할 요청이나 contract 변경이 있으면 필요한 worker에게 후속 작업을 순차 분배한다.
+8. .squad-runs 경로 아래 handoff/*.md를 반드시 읽는다. handoff에 상대 역할 요청이나 contract 변경이 있으면 필요한 worker에게 후속 작업을 순차 분배하고, 후속 분배도 반드시 --send --submit --wait로 실행한다.
 9. 구현 작업이면 프로젝트 git diff와 구현 담당 worker의 results/*.md 존재 여부를 확인한다.
-10. changed_files가 Worker Scope Contract의 allowed_paths 밖이면 좋은 수정이어도 merge하지 말고 cross-boundary request로 재분배한다.
-11. 중복 migration, 중복 메서드/심볼, 서로 다른 API contract 수정, exclusive artifact 복수 수정 여부를 확인한다.
-12. 사용자에게 구현 결과, 변경 파일, handoff/contract 변경, 위험 요소, 테스트 결과만 보고한다.
-13. 직접 구현하지 말고 worker 결과와 handoff를 검증하고 취합한다.
+10. changed_files가 Worker Scope Contract의 allowed_paths 밖이어도 작업 완성에 필요하다고 판단하면 후속 작업 프롬프트에 "Commander 승인 추가 허용 경로"와 이유, owner를 명시해 자동 승인한다.
+11. assigned_project 밖 변경이 필요하다고 판단하면 후속 작업 프롬프트에 "Commander 승인 추가 허용 프로젝트"와 이유, owner를 명시해 자동 승인한다.
+12. 중복 migration, 중복 메서드/심볼, 서로 다른 API contract 수정, exclusive artifact 복수 수정 여부를 확인한다.
+13. DB schema/migration, API contract, generated file, lockfile 같은 exclusive artifact는 단일 owner를 명시한 경우에만 자동 승인한다.
+14. 사용자에게 구현 결과, 변경 파일, handoff/contract 변경, 위험 요소, 테스트 결과만 보고한다.
+15. 직접 구현하지 말고 worker 결과와 handoff를 검증하고 취합한다.
 
 프로젝트:
 - ${project}
@@ -2015,12 +2019,14 @@ async function send(args) {
     }
 
     const promptText = await readFile(path.join(runDir, filename), 'utf8');
+    const bufferName = `ai-squad-${manifest.runId ?? path.basename(runDir)}-${role}`;
     runCmux(['send-key', '--workspace', workspaceId, 'ctrl+c'], `cancel pending input for ${role}`);
     runCmux(['send-key', '--workspace', workspaceId, 'ctrl+u'], `clear pending input for ${role}`);
-    runCmux(['send', '--workspace', workspaceId, promptText], `send prompt to ${role}`);
+    runCmux(['set-buffer', '--name', bufferName, promptText], `set prompt buffer for ${role}`);
+    runCmux(['paste-buffer', '--name', bufferName, '--workspace', workspaceId], `paste prompt to ${role}`);
 
     if (args.submit) {
-      runCmux(['send-key', '--workspace', workspaceId, 'enter'], `submit prompt to ${role}`);
+      runCmux(['send', '--workspace', workspaceId, '\\n'], `submit prompt to ${role}`);
     }
 
     sentCount += 1;

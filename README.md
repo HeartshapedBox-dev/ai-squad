@@ -280,7 +280,7 @@ squad new my-app --type next --model gpt-5.4-mini --role-models commander=gpt-5.
 - `코만더노동자`
 
 이후에는 `코만더노동자` 탭에만 작업을 말한다. Commander는 필요한 worker에게 자동 분배 명령을 실행하고, worker 결과 파일이 생길 때까지 기다린 뒤 결과를 취합해 사용자에게 보고한다.
-구현/수정/추가/개발 작업은 Backend/Frontend Worker가 실제 구현 담당이다. 화면/UI 작업은 Frontend가 구현하고, 서버/API 작업은 Backend가 구현한다.
+구현/수정/추가/개발 작업은 Backend/Database/Frontend Worker가 실제 구현 담당이다. 화면/UI 작업은 Frontend가 구현하고, 서버/API 작업은 Backend가 구현하고, DB schema/migration/seed/DB provider/env example/DB 의존성 변경은 Database가 구현한다.
 Reviewer, Planner, Tester 세션은 떠 있어도 매 작업마다 호출하지 않는다. “리뷰/검토”를 요청하면 Reviewer를, “기획/계획/설계”를 요청하면 Planner를, “테스트/검증/QA”를 요청하면 Tester를 분배에 포함한다.
 
 예:
@@ -310,9 +310,9 @@ node bin/squad.mjs dispatch --workspace /path/to/squad.json
 - `results/*.md`: worker별 최종 결과 파일. 이 파일이 작업 완료 신호다.
 - `handoff/*.md`: 역할 간 계약 변경과 후속 요청을 공유하는 파일
 
-역할별 worker는 자기 담당 프로젝트와 allowed paths 밖을 직접 수정하지 않는다. 대신 다른 역할의 수정이 필요하면 `handoff/`에 요청을 남긴다. `handoff/*.md`는 보조 전달 파일이며 완료 신호가 아니다. 검증 메모나 계약 정리를 `handoff/`에 남겼더라도 최종 요약은 반드시 `results/<role>.md`에도 남겨야 한다.
+역할별 worker는 자기 담당 프로젝트와 allowed paths 밖을 직접 수정하지 않는다. 대신 다른 역할의 수정이 필요하면 `handoff/`에 요청을 남긴다. Commander가 handoff와 worker 결과를 보고 필요하다고 판단하면 후속 작업 프롬프트에 `Commander 승인 추가 허용 경로` 또는 `Commander 승인 추가 허용 프로젝트`를 정확한 경로/owner/이유와 함께 적어 자동 승인할 수 있다. `handoff/*.md`는 보조 전달 파일이며 완료 신호가 아니다. 검증 메모나 계약 정리를 `handoff/`에 남겼더라도 최종 요약은 반드시 `results/<role>.md`에도 남겨야 한다.
 
-구현 요청에서 Database Worker는 DB artifact owner로 동작한다. 기본 allowed paths에는 `package.json`, lockfile, `prisma/`, `src/prisma/`, `src/database/`, `src/db/`, `.env.example`가 포함되며, ORM schema/migration/seed/DB provider/env example/DB 의존성 변경을 맡는다. API controller/service 구현은 Backend Worker에게 handoff로 넘긴다.
+구현 요청에서 Database Worker는 DB artifact owner로 동작하고, DB 관련 파일은 직접 수정할 권한을 가진다. 기본 allowed paths에는 `package.json`, lockfile, `prisma/`, `src/prisma/`, `src/database/`, `src/db/`, `.env.example`가 포함되며, ORM schema/migration/seed/DB provider/env example/DB 의존성 변경을 맡는다. API controller/service 구현은 Backend Worker에게 handoff로 넘긴다.
 
 예:
 
@@ -321,7 +321,7 @@ node bin/squad.mjs dispatch --workspace /path/to/squad.json
 - `handoff/database-to-backend.md`: DB schema/migration 변경 때문에 백엔드가 반영해야 할 요청
 - `handoff/contract.md`: API request/response, shared type, env, generated client 같은 공통 계약 변경
 
-Commander는 worker 결과와 함께 `handoff/*.md`를 읽고, 후속 worker 분배가 필요하면 순차적으로 다시 작업을 보낸다.
+Commander는 worker 결과와 함께 `handoff/*.md`를 읽고, 후속 worker 분배가 필요하면 순차적으로 다시 작업을 보낸다. 이때 범위 밖 수정이 작업 완성에 필요하다고 판단하면 단일 owner와 정확한 경로를 지정해 자동 승인한다.
 
 작업 유형을 직접 지정할 수도 있다.
 
@@ -354,7 +354,7 @@ node bin/squad.mjs send --run latest --dry-run
 node bin/squad.mjs send --run latest
 ```
 
-붙여넣은 뒤 바로 실행까지 하려면 `--submit`을 붙인다.
+붙여넣은 뒤 바로 실행까지 하려면 `--submit`을 붙인다. 전송은 cmux buffer에 프롬프트 본문을 저장한 뒤 `paste-buffer`로 붙여넣고, 제출 Enter만 별도로 cmux `send "\\n"`로 보낸다. 이렇게 하면 긴 프롬프트 본문과 Enter 키 입력이 섞이거나 본문 속 escape 문자열이 오해되는 문제를 줄일 수 있다.
 
 ```bash
 node bin/squad.mjs send --run latest --submit
