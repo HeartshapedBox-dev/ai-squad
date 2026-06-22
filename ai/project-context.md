@@ -2,11 +2,11 @@
 
 ## 프로젝트 개요
 
-`dev-town`는 Next.js web application다.
+`midpyeong`는 new software project다.
 
 ## 코드 프로젝트 경로
 
-- /Users/james/projects/dev-town
+- /Users/james/projects/midpyeong
 
 ## 주요 기능
 

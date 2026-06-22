@@ -1040,7 +1040,19 @@ function allowedPathsForRole(role, boundaries) {
     return unique([...boundaries.backend_roots, ...boundaries.test_roots]);
   }
   if (role === 'database') {
-    return unique([...boundaries.data_roots, ...boundaries.migration_roots]);
+    return unique([
+      ...boundaries.data_roots,
+      ...boundaries.migration_roots,
+      'package.json',
+      'package-lock.json',
+      'pnpm-lock.yaml',
+      'yarn.lock',
+      'prisma',
+      'src/prisma',
+      'src/database',
+      'src/db',
+      '.env.example',
+    ]);
   }
   if (role === 'infra') {
     return unique([...boundaries.infra_roots]);
@@ -1065,7 +1077,7 @@ function deniedPathsForRole(role, boundaries, exclusive) {
     ...boundaries.contract_roots,
     ...boundaries.infra_roots,
     ...exclusive,
-  ]).filter((item) => !roleOwned.has(item));
+  ]).filter((item) => !isCoveredByAllowedPath(item, roleOwned));
 }
 
 function formatList(items) {
@@ -1074,6 +1086,19 @@ function formatList(items) {
 
 function unique(items) {
   return [...new Set(items.filter(Boolean))].sort();
+}
+
+function isCoveredByAllowedPath(item, allowedPaths) {
+  if (allowedPaths.has(item)) {
+    return true;
+  }
+
+  return [...allowedPaths].some((allowed) => {
+    if (!allowed || allowed === '.') {
+      return false;
+    }
+    return item.startsWith(`${allowed}/`) || allowed.startsWith(`${item}/`);
+  });
 }
 
 function rolePrompt(role, mode, projectPath, contextBlock = '', resultFile = null, taskText = '', runId = '') {
@@ -1120,6 +1145,10 @@ function rolePrompt(role, mode, projectPath, contextBlock = '', resultFile = nul
 
   if (role === 'frontend' && implement) {
     return `${base}\n\nFrontend 역할: 실제 구현 담당이다. 기존 UI 구조와 스타일을 확인하고 최소 변경으로 구현해라. 단, 아래 Worker Scope Contract의 allowed_paths 밖 파일은 수정하지 말고 필요한 변경을 보고만 해라. API/server/DB schema/migration/API contract/generated/lockfile 변경은 Commander가 별도 승인하지 않았으면 직접 만들지 마라. 컴포넌트, 페이지, 스타일, 상태 처리 변경과 검증 명령을 결과에 명시해라.`;
+  }
+
+  if (role === 'database' && implement) {
+    return `${base}\n\nDatabase 역할: DB artifact 실제 구현 담당이다. 기존 ORM/DB 구조를 확인하고 allowed_paths 안에서 Prisma/TypeORM/Mongoose schema, migration, seed, DB module/provider, env example, DB 의존성 package 변경을 최소 범위로 구현해라. DB schema/migration/package/lockfile은 이 작업에서 네가 단일 owner이며, API service/controller 구현은 Backend Worker에게 handoff로 넘겨라. 검증 명령과 변경 파일을 결과에 명시해라.`;
   }
 
   if (['backend', 'frontend'].includes(role)) {

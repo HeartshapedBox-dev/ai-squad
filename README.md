@@ -312,6 +312,8 @@ node bin/squad.mjs dispatch --workspace /path/to/squad.json
 
 역할별 worker는 자기 담당 프로젝트와 allowed paths 밖을 직접 수정하지 않는다. 대신 다른 역할의 수정이 필요하면 `handoff/`에 요청을 남긴다. `handoff/*.md`는 보조 전달 파일이며 완료 신호가 아니다. 검증 메모나 계약 정리를 `handoff/`에 남겼더라도 최종 요약은 반드시 `results/<role>.md`에도 남겨야 한다.
 
+구현 요청에서 Database Worker는 DB artifact owner로 동작한다. 기본 allowed paths에는 `package.json`, lockfile, `prisma/`, `src/prisma/`, `src/database/`, `src/db/`, `.env.example`가 포함되며, ORM schema/migration/seed/DB provider/env example/DB 의존성 변경을 맡는다. API controller/service 구현은 Backend Worker에게 handoff로 넘긴다.
+
 예:
 
 - `handoff/frontend-to-backend.md`: 프론트 변경 때문에 백엔드가 맞춰야 할 API/검증 요청
