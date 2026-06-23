@@ -171,27 +171,35 @@ cd /Users/james/projects/dev-town
 
 예를 들어 `src/...`와 `apps/web/...`가 감지되면 Backend Worker는 `src`에서, Frontend Worker는 `apps/web`에서 시작한다. Commander만 루트 프로젝트 전체를 보고, worker는 자기 담당 하위 프로젝트 밖 변경을 하지 않는다.
 
-백엔드와 프론트엔드가 서로 다른 프로젝트라면 workspace 파일을 만든 뒤 시작한다.
+백엔드와 프론트엔드가 서로 다른 프로젝트라면 전역 workspace registry에 한 번 등록해두면 된다. `~/.ai-squad/workspaces.json` 또는 `~/.config/ai-squad/workspaces.json`에 프로젝트 묶음을 적어두면, `squad start /path/to/project`나 `squad ask ... --project /path/to/project`가 현재 경로와 맞는 workspace를 자동으로 찾는다.
 
 ```json
 {
-  "primary_project": "backend",
-  "projects": {
-    "backend": "/Users/james/projects/my-api",
-    "frontend": "/Users/james/projects/my-web"
+  "my-product": {
+    "primary_project": "backend",
+    "projects": {
+      "backend": "/Users/james/projects/my-api",
+      "frontend": "/Users/james/projects/my-web"
+    },
+    "role_projects": {
+      "planner": "backend",
+      "backend": "backend",
+      "database": "backend",
+      "frontend": "frontend",
+      "infra": "backend",
+      "commander": "backend",
+      "reviewer": "backend",
+      "tester": "backend"
+    }
   },
-  "role_projects": {
-    "planner": "backend",
-    "backend": "backend",
-    "database": "backend",
-    "frontend": "frontend",
-    "infra": "backend",
-    "commander": "backend",
-    "reviewer": "backend",
-    "tester": "backend"
-  }
 }
 ```
+
+```bash
+squad start /Users/james/projects/my-api --approval request
+```
+
+일회성으로만 쓰고 싶다면 기존처럼 개별 workspace 파일을 직접 지정할 수도 있다.
 
 ```bash
 squad start --workspace /Users/james/projects/my-product/squad.json --approval request

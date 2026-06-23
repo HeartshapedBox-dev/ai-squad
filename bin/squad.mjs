@@ -13,6 +13,10 @@ const ROOT = path.resolve(__dirname, '..');
 const RUNS_DIR = path.join(ROOT, '.squad-runs');
 const STATE_DIR = path.join(ROOT, '.squad-state');
 const TERMINAL_MAP_FILE = path.join(STATE_DIR, 'terminals.json');
+const GLOBAL_WORKSPACE_FILES = [
+  path.join(os.homedir(), '.ai-squad', 'workspaces.json'),
+  path.join(os.homedir(), '.config', 'ai-squad', 'workspaces.json'),
+];
 const CMUX_CLI = '/Applications/cmux.app/Contents/Resources/bin/cmux';
 
 const ROLE_ORDER = [
@@ -215,6 +219,11 @@ async function resolveWorkspace(args) {
   }
 
   const project = path.resolve(expandHome(args.project ?? process.cwd()));
+  const registered = await findRegisteredWorkspace(project);
+  if (registered) {
+    return registered;
+  }
+
   const inferred = await inferWorkspaceFromProject(project);
   if (inferred) {
     return inferred;
@@ -226,6 +235,65 @@ async function resolveWorkspace(args) {
     projects: { default: project },
     roleProjects: Object.fromEntries(ROLE_ORDER.map((role) => [role, 'default'])),
   };
+}
+
+async function findRegisteredWorkspace(project) {
+  for (const registryFile of GLOBAL_WORKSPACE_FILES) {
+    const registry = await loadWorkspaceRegistry(registryFile);
+    if (!registry) {
+      continue;
+    }
+
+    for (const entry of registry.entries) {
+      const workspace = normalizeWorkspaceConfig(entry.config, registryFile, entry.name);
+      if (workspaceMatchesProject(workspace, project)) {
+        return {
+          ...workspace,
+          source: null,
+          registry: true,
+          registrySource: registryFile,
+          registryName: entry.name,
+        };
+      }
+    }
+  }
+
+  return null;
+}
+
+async function loadWorkspaceRegistry(registryFile) {
+  let raw;
+  try {
+    raw = JSON.parse(await readFile(registryFile, 'utf8'));
+  } catch {
+    return null;
+  }
+
+  const entries = [];
+  const rawWorkspaces = raw.workspaces ?? raw;
+
+  if (Array.isArray(rawWorkspaces)) {
+    for (const [index, config] of rawWorkspaces.entries()) {
+      entries.push({ name: config.name ?? `workspace-${index + 1}`, config });
+    }
+  } else if (rawWorkspaces && typeof rawWorkspaces === 'object') {
+    for (const [name, config] of Object.entries(rawWorkspaces)) {
+      entries.push({ name, config });
+    }
+  }
+
+  return { entries };
+}
+
+function workspaceMatchesProject(workspace, project) {
+  const candidate = path.resolve(project);
+  return workspaceProjectDirs(workspace).some((projectPath) => isSameOrInside(candidate, projectPath));
+}
+
+function isSameOrInside(candidate, parent) {
+  const resolvedParent = path.resolve(parent);
+  const relative = path.relative(resolvedParent, candidate);
+  return relative === '' || Boolean(relative && !relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
 async function inferWorkspaceFromProject(project) {
@@ -283,8 +351,12 @@ function chooseBoundaryRoot(roots) {
 
 async function loadWorkspaceFile(workspacePath) {
   const source = path.resolve(expandHome(workspacePath));
-  const baseDir = path.dirname(source);
   const raw = JSON.parse(await readFile(source, 'utf8'));
+  return normalizeWorkspaceConfig(raw, source);
+}
+
+function normalizeWorkspaceConfig(raw, source, registryName = null) {
+  const baseDir = path.dirname(source);
   const rawProjects = raw.projects ?? {};
   const projects = {};
 
@@ -323,6 +395,7 @@ async function loadWorkspaceFile(workspacePath) {
 
   return {
     source,
+    registryName,
     primaryProject: projects[primaryProjectKey],
     primaryProjectKey,
     projects,
@@ -345,13 +418,16 @@ function workspaceProjectDirs(workspace) {
 }
 
 function isRoleScopedWorkspace(workspace) {
-  return Boolean(workspace.source || workspace.inferred);
+  return Boolean(workspace.source || workspace.inferred || workspace.registry);
 }
 
 function workspaceForManifest(workspace) {
   return {
     source: workspace.source,
     inferred: Boolean(workspace.inferred),
+    registry: Boolean(workspace.registry),
+    registrySource: workspace.registrySource,
+    registryName: workspace.registryName,
     primaryProject: workspace.primaryProject,
     primaryProjectKey: workspace.primaryProjectKey ?? 'default',
     projects: workspace.projects,
